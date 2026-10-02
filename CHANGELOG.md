@@ -10,3 +10,4 @@ All notable changes to `@nithin93/encrypted-share` are documented in this file.
 - Hardening: verify-then-land, path sanitization, overwrite refusal by default, tar dependency removed.
 - Features: progress bars, per-file checksums, resume.
 - 57 tests with coverage gates, CI green on Node 22/24.
+- repository.url uses the plain GitHub URL form (trusted publishing requires an exact match).
