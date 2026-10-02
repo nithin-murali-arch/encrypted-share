@@ -1,7 +1,7 @@
 {
   "name": "@nithin93/encrypted-share",
   "version": "2.0.0",
-  "description": "Securely share files and directories over TCP with AES-256-GCM encryption. v2: chunked authenticated protocol with resume, progress bars, and checksum verification.",
+  "description": "Secure file sharing over TCP with AES-256-GCM. Transfers resume with checksums.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
@@ -28,7 +28,6 @@
     "file-sharing",
     "cli",
     "aes-256-gcm",
-    "secure",
     "tcp",
     "resume",
     "checksum",

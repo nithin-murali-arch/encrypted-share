@@ -1,13 +1,21 @@
 # Encrypted Share CLI
 
-A cross-platform CLI tool for securely sharing files and directories using
-AES-256-GCM encryption over TCP.
+Secure file sharing over TCP with AES-256-GCM. Transfers resume with checksums.
 
-v2 is a from-scratch rewrite on a chunked, framed protocol: every chunk is
-independently authenticated, every file is checksum-verified against a signed
-manifest, transfers resume where they stopped, and the server confirms receipt
-before the client reports success. See [DESIGN.md](DESIGN.md) for the protocol
-spec and the v1 post-mortem.
+[![CI](https://github.com/nithin-murali-arch/encrypted-share/actions/workflows/ci.yml/badge.svg)](https://github.com/nithin-murali-arch/encrypted-share/actions/workflows/ci.yml) [![npm version](https://img.shields.io/npm/v/@nithin93%2Fencrypted-share.svg)](https://www.npmjs.com/package/@nithin93/encrypted-share)
+
+Protocol details live in [DESIGN.md](DESIGN.md).
+
+## Quick Start
+
+```bash
+npm install -g @nithin93/encrypted-share
+```
+
+```bash
+encrypted-share serve --port 3000 --key <password> --out ./received-files
+encrypted-share send --target 192.0.2.10:3000 --key <password> ./data
+```
 
 ## Features
 
