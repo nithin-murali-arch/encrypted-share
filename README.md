@@ -1,6 +1,11 @@
 # @nithin93/encrypted-share
 
-[![CI](https://github.com/nithin-murali-arch/encrypted-share/actions/workflows/ci.yml/badge.svg)](https://github.com/nithin-murali-arch/encrypted-share/actions/workflows/ci.yml) [![npm version](https://img.shields.io/npm/v/@nithin93%2Fencrypted-share.svg)](https://www.npmjs.com/package/@nithin93/encrypted-share)
+[![CI](https://github.com/nithin-murali-arch/encrypted-share/actions/workflows/ci.yml/badge.svg)](https://github.com/nithin-murali-arch/encrypted-share/actions/workflows/ci.yml)
+[![npm version](https://img.shields.io/npm/v/@nithin93%2Fencrypted-share)](https://www.npmjs.com/package/@nithin93/encrypted-share)
+[![npm downloads](https://img.shields.io/npm/dm/@nithin93%2Fencrypted-share)](https://www.npmjs.com/package/@nithin93/encrypted-share)
+[![license](https://img.shields.io/npm/l/@nithin93%2Fencrypted-share)](https://github.com/nithin-murali-arch/encrypted-share/blob/main/LICENSE)
+[![types](https://img.shields.io/npm/types/@nithin93%2Fencrypted-share)](https://www.npmjs.com/package/@nithin93/encrypted-share)
+[![node](https://img.shields.io/node/v/@nithin93%2Fencrypted-share)](https://www.npmjs.com/package/@nithin93/encrypted-share)
 
 `encrypted-share` is a command-line tool and Node.js library for sending files and folders between two machines over TCP. Everything after a short handshake, file names included, is encrypted and authenticated with AES-256-GCM and a shared password. It checks a SHA-256 hash for every file before the file lands, resumes interrupted transfers, has no native dependencies, and needs no third-party server or account.
 
