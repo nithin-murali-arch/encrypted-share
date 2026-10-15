@@ -13,7 +13,7 @@ function pkgVersion(): string {
   try {
     return (require('../package.json') as { version: string }).version;
   } catch {
-    return '2.0.0';
+    return '2.0.1';
   }
 }
 
@@ -53,7 +53,7 @@ export function createProgram(): Command {
     .description('Start the file receiving server')
     .option('-p, --port <number>', 'Port to listen on')
     .option('-k, --key <string>', 'Encryption key (password)')
-    .option('-o, --out <path>', 'Output directory', './received-files')
+    .option('-o, --out <path>', 'Output directory (default: ./received-files)')
     .option('-c, --config <path>', 'Path to config file')
     .option('--overwrite', 'Overwrite existing files')
     .action(async (options) => {
