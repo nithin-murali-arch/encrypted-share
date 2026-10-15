@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches: [main, 'portfolio/**', feat/serve-host]
 
 jobs:
   build-test:
