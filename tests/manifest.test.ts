@@ -41,7 +41,7 @@ describe('buildManifest', () => {
     }
   });
 
-  test('non-file non-dir throws not-supported', async () => {
+  (process.platform === 'win32' ? test.skip : test)('non-file non-dir throws not-supported', async () => {
     try {
       await buildManifest('/dev/null');
       throw new Error('should have thrown');
