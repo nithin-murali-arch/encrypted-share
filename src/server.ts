@@ -1,5 +1,5 @@
 import { createServer } from 'net';
-import type { Socket } from 'net';
+import type { AddressInfo, Socket } from 'net';
 import { DEFAULT_IDLE_TIMEOUT_MS, SocketChannel } from './channel';
 import { deriveKey, deriveSessionKeys, randomServerNonce } from './crypto';
 import {
@@ -20,6 +20,7 @@ import { PartialStore } from './store';
 
 export interface ServerOptions {
   port: number;
+  host?: string;
   password: string | Buffer;
   outDir: string;
   overwrite?: boolean;
@@ -28,6 +29,7 @@ export interface ServerOptions {
 }
 
 export interface ServerHandle {
+  host: string;
   port: number;
   close(): Promise<void>;
 }
@@ -149,15 +151,15 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
   });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
-    server.listen(opts.port, () => {
+    server.listen(opts.port, opts.host, () => {
       server.removeListener('error', reject);
       resolve();
     });
   });
   server.on('error', (err: Error) => log(`server error: ${err.message}`));
-  const addr = server.address();
-  const port = typeof addr === 'object' && addr !== null ? addr.port : opts.port;
+  const { address: host, port } = server.address() as AddressInfo;
   return {
+    host,
     port,
     close: () =>
       new Promise<void>((resolve, reject) => {

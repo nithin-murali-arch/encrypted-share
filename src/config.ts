@@ -6,6 +6,7 @@ export interface EsConfig {
   key?: string;
   server?: string;
   port?: number | string;
+  host?: string;
   outputDir?: string;
 }
 

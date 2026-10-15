@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 import { mkdtempSync, mkdirSync, readdirSync, readFileSync, existsSync, writeFileSync } from 'fs';
 import { connect, createServer, Socket } from 'net';
-import { tmpdir } from 'os';
+import { networkInterfaces, tmpdir } from 'os';
 import { join } from 'path';
 import { SocketChannel } from '../src/channel';
 import { clientHandshake } from '../src/client';
@@ -27,10 +27,11 @@ afterEach(async () => {
 
 async function withServer(
   outDir: string,
-  opts: { password?: string; overwrite?: boolean; idleTimeoutMs?: number } = {},
-): Promise<{ port: number; log: string[] }> {
+  opts: { host?: string; password?: string; overwrite?: boolean; idleTimeoutMs?: number } = {},
+): Promise<{ host: string; port: number; log: string[] }> {
   const log: string[] = [];
   const handle = await startServer({
+    host: opts.host,
     port: 0,
     password: opts.password ?? 'test-password',
     outDir,
@@ -39,7 +40,7 @@ async function withServer(
     onTransfer: (m) => log.push(m),
   });
   servers.push(handle);
-  return { port: handle.port, log };
+  return { host: handle.host, port: handle.port, log };
 }
 
 async function openSession(port: number, password = 'test-password'): Promise<{ ch: SocketChannel; sc: SecureChannel }> {
@@ -59,6 +60,10 @@ function closedWithin(socket: Socket, ms: number): Promise<boolean> {
     sleep(ms).then(() => false),
   ]);
 }
+
+const lanIPv4 = Object.values(networkInterfaces())
+  .flat()
+  .find((a) => a !== undefined && a.family === 'IPv4' && !a.internal)?.address;
 
 function makeTree(): string {
   const dir = mkdtempSync(join(tmpdir(), 'es-e2e-src-'));
@@ -225,6 +230,30 @@ describe('e2e', () => {
     const { port } = await withServer(out);
     await expect(startServer({ port, password: 'x', outDir: out })).rejects.toThrow();
   });
+
+  test('server bound to 127.0.0.1 accepts a transfer on 127.0.0.1', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'es-e2e-src-'));
+    writeFileSync(join(dir, 'one.txt'), 'ONE');
+    const out = mkdtempSync(join(tmpdir(), 'es-e2e-out-'));
+    const { host, port } = await withServer(out, { host: '127.0.0.1' });
+    expect(host).toBe('127.0.0.1');
+    const report = await sendFiles({ host: '127.0.0.1', port, password: 'test-password', path: dir });
+    expect(report).toEqual({ files: ['one.txt'], bytes: 3 });
+    expect(readFileSync(join(out, 'one.txt'), 'utf8')).toBe('ONE');
+  });
+
+  (lanIPv4 === undefined ? test.skip : test)(
+    `server bound to 127.0.0.1 refuses connections on ${lanIPv4 ?? 'a non-loopback IPv4 address'}`,
+    async () => {
+      const src = makeTree();
+      const out = mkdtempSync(join(tmpdir(), 'es-e2e-out-'));
+      const { port } = await withServer(out, { host: '127.0.0.1' });
+      await expect(
+        sendFiles({ host: lanIPv4!, port, password: 'test-password', path: src }),
+      ).rejects.toThrow(expect.objectContaining({ code: 'connect-failed' }));
+      expect(readdirSync(out)).toEqual([]);
+    },
+  );
 
   test('server closes a connection that goes idle after the hello', async () => {
     const out = mkdtempSync(join(tmpdir(), 'es-e2e-out-'));

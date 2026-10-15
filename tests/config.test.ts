@@ -11,8 +11,17 @@ describe('loadConfig', () => {
   test('loads JSON config', () => {
     const dir = mkdtempSync(join(tmpdir(), 'es-cfg-'));
     const f = join(dir, 'cfg.json');
-    writeFileSync(f, JSON.stringify({ key: 'pw', server: 'h:1', port: 1, outputDir: 'o' }));
-    expect(loadConfig(f)).toEqual({ key: 'pw', server: 'h:1', port: 1, outputDir: 'o' });
+    writeFileSync(
+      f,
+      JSON.stringify({ key: 'pw', server: 'h:1', port: 1, host: '100.64.0.1', outputDir: 'o' }),
+    );
+    expect(loadConfig(f)).toEqual({
+      key: 'pw',
+      server: 'h:1',
+      port: 1,
+      host: '100.64.0.1',
+      outputDir: 'o',
+    });
   });
 
   test('broken JSON warns and yields empty config', () => {
