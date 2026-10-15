@@ -269,11 +269,15 @@ npx @nithin93/encrypted-share@3 serve --host "$(tailscale ip -4)" --port 3000 --
 
 ### Transfer on a network with no internet access
 
-Use Node.js 20 or later on both machines. On a connected machine, download the package tarball. Its runtime dependencies are bundled in the tarball.
+Use Node.js 20 or later on both machines. On a connected machine, build and pack this checkout. The resulting tarball bundles its runtime dependencies.
 
 ```sh
-npm pack @nithin93/encrypted-share
+npm ci
+npm run build
+npm pack
 ```
+
+Published 3.0.1 and earlier tarballs do not bundle their dependencies. Downloading those tarballs with `npm pack @nithin93/encrypted-share` alone is not enough for an offline installation with an empty cache. After a release containing this packaging change, you can download that release with `npm pack @nithin93/encrypted-share@<version>`.
 
 Copy `nithin93-encrypted-share-3.x.y.tgz` to each machine with removable media. Replace `3.x.y` with the version in the filename. Install without contacting the registry.
 
@@ -285,9 +289,9 @@ Start the receiver, then send from the other machine using the receiver's LAN ad
 
 ```sh
 # Receiver
- encrypted-share serve --port 3000 --key 'your-shared-password' --out ./received
+encrypted-share serve --port 3000 --key 'your-shared-password' --out ./received
 # Sender
- encrypted-share send ./dataset --target 192.168.1.20:3000 --key 'your-shared-password'
+encrypted-share send ./dataset --target 192.168.1.20:3000 --key 'your-shared-password'
 ```
 
 The sender must reach the receiver's TCP port. Allow it through the LAN firewall. No relay, DNS service, or internet connection is required when you use a LAN IP address. Both machines must use 3.x. Protocol 3.x cannot communicate with 2.x.
