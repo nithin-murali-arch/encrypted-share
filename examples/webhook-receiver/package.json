@@ -1,0 +1,12 @@
+{
+  "name": "encrypted-share-webhook-receiver-example",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node receiver.mjs",
+    "verify": "node verify.mjs"
+  }
+}

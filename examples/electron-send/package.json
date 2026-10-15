@@ -1,0 +1,18 @@
+{
+  "name": "encrypted-share-electron-send-example",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Context-isolated Electron sender for encrypted-share",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "smoke": "electron . --smoke",
+    "postinstall": "install-electron"
+  },
+  "devDependencies": {
+    "electron": "^42.11.14"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}

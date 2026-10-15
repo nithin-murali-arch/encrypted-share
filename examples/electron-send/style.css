@@ -1,0 +1,9 @@
+body { font-family: system-ui, sans-serif; margin: 28px; color: #17233a; background: #f7f9fc; }
+h1 { font-size: 25px; }
+label { display: block; margin-top: 12px; }
+input { box-sizing: border-box; width: 100%; padding: 7px; margin-top: 4px; }
+button { padding: 9px 14px; cursor: pointer; }
+button:disabled { cursor: default; }
+.file { margin: 16px 0; }
+progress { width: 100%; margin-top: 20px; }
+#status { overflow-wrap: anywhere; }
