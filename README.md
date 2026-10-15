@@ -267,6 +267,33 @@ The [tailscale/github-action README](https://github.com/tailscale/github-action#
 npx @nithin93/encrypted-share@3 serve --host "$(tailscale ip -4)" --port 3000 --key <password> --overwrite
 ```
 
+### Transfer on a network with no internet access
+
+Use Node.js 20 or later on both machines. On a connected machine, download the package tarball. Its runtime dependencies are bundled in the tarball.
+
+```sh
+npm pack @nithin93/encrypted-share
+```
+
+Copy `nithin93-encrypted-share-3.x.y.tgz` to each machine with removable media. Replace `3.x.y` with the version in the filename. Install without contacting the registry.
+
+```sh
+npm install --offline -g ./nithin93-encrypted-share-3.x.y.tgz
+```
+
+Start the receiver, then send from the other machine using the receiver's LAN address.
+
+```sh
+# Receiver
+ encrypted-share serve --port 3000 --key 'your-shared-password' --out ./received
+# Sender
+ encrypted-share send ./dataset --target 192.168.1.20:3000 --key 'your-shared-password'
+```
+
+The sender must reach the receiver's TCP port. Allow it through the LAN firewall. No relay, DNS service, or internet connection is required when you use a LAN IP address. Both machines must use 3.x. Protocol 3.x cannot communicate with 2.x.
+
+Run `node examples/offline-install/verify.mjs ./nithin93-encrypted-share-3.x.y.tgz` from this checkout to verify installation with a fresh prefix and an empty npm cache.
+
 ### Receive files in Docker
 
 To run the receiver on a host that has Docker but not Node.js, run `npx` in the official `node:22-alpine` image and mount the output directory.
