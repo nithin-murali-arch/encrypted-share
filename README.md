@@ -122,6 +122,156 @@ await server.close();
 
 Both accept `idleTimeoutMs` (default `60000`). A side that receives nothing from its peer for that long closes the connection, and `sendFiles` rejects with code `timeout`.
 
+## Recipes
+
+Each recipe does one job. Replace the host names and `<password>` with your own.
+
+### Send a folder from a Node.js script
+
+To send a build or any other folder from a script, call `sendFiles` and turn `TransferError.code` into a message and an exit code.
+
+```js
+import { sendFiles, TransferError } from '@nithin93/encrypted-share';
+
+const [target, dir = './dist'] = process.argv.slice(2);
+const [host, port] = (target ?? '').split(':');
+const password = process.env.ES_PASSWORD;
+if (!host || !port || !password) {
+  console.error('usage: ES_PASSWORD=<password> node send-build.mjs <host:port> [dir]');
+  process.exit(1);
+}
+
+const failures = {
+  'not-found': [1, `${dir} does not exist`],
+  'connect-failed': [2, 'cannot reach the receiver; is encrypted-share serve running?'],
+  'handshake-failed': [2, 'the receiver may run encrypted-share 2.x'],
+  rejected: [2, 'the receiver refused the transfer'],
+  timeout: [2, 'the receiver stopped responding'],
+  'verify-failed': [2, 'the receiver could not verify every file'],
+};
+
+let lastTenth = -1;
+try {
+  const report = await sendFiles({
+    host,
+    port: Number(port),
+    password,
+    path: dir,
+    onProgress: (sent, total) => {
+      const tenth = total === 0 ? 10 : Math.floor((sent / total) * 10);
+      if (tenth > lastTenth) console.log(`${tenth * 10}%`);
+      lastTenth = tenth;
+    },
+  });
+  console.log(`sent ${report.files.length} file(s), ${report.bytes} bytes`);
+} catch (err) {
+  if (!(err instanceof TransferError)) throw err;
+  const [exitCode, hint] = failures[err.code] ?? [2, 'transfer failed'];
+  console.error(`${hint} (${err.code}: ${err.message})`);
+  process.exitCode = exitCode;
+}
+```
+
+Save the script as `send-build.mjs` and run `ES_PASSWORD=<password> node send-build.mjs 192.0.2.10:3000 ./dist`. Like the CLI, it exits with `1` for a missing folder and `2` for a failed transfer.
+
+### Receive files inside an existing Node.js app
+
+To accept transfers in a process that already serves HTTP, call `startServer` next to your Express app and close both on `SIGINT` and `SIGTERM`.
+
+```js
+import express from 'express';
+import { startServer } from '@nithin93/encrypted-share';
+
+if (!process.env.ES_PASSWORD) throw new Error('set ES_PASSWORD');
+
+const app = express();
+app.get('/health', (req, res) => res.send('ok'));
+const http = app.listen(8080);
+
+const receiver = await startServer({
+  port: 3000,
+  password: process.env.ES_PASSWORD,
+  outDir: './uploads',
+  onTransfer: (msg) => console.log(`[encrypted-share] ${msg}`),
+});
+console.log(`HTTP on 8080, encrypted-share on ${receiver.port}`);
+
+async function shutdown(signal) {
+  console.log(`${signal}: closing`);
+  await Promise.all([receiver.close(), new Promise((resolve) => http.close(resolve))]);
+}
+process.once('SIGINT', shutdown);
+process.once('SIGTERM', shutdown);
+```
+
+`onTransfer` receives the messages that `encrypted-share serve` prints, such as `transfer complete: 2 file(s) verified`. The receiver listens on its own TCP port, 3000 here, and not on the Express port.
+
+### Back up a folder every night
+
+To copy a folder to another machine every night, keep the password in a config file and run `send` from `cron` on Linux or macOS.
+
+On the sending machine, create `~/.encrypted-share-backup.json` in a text editor, so the password stays out of your shell history. Then run `chmod 600 ~/.encrypted-share-backup.json`.
+
+```json
+{
+  "key": "<password>",
+  "server": "backup-host:3000"
+}
+```
+
+Run `crontab -e` and add the two lines below. Cron starts jobs with a short `PATH`, so the first line must include the directories that hold `node` and `npx`. Run `command -v node npx` to find them.
+
+```text
+PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin
+30 2 * * * npx --yes @nithin93/encrypted-share@3 send --config "$HOME/.encrypted-share-backup.json" "$HOME/notes" >> "$HOME/encrypted-share-backup.log" 2>&1
+```
+
+Each run sends the whole folder again, so start the receiver with `serve --overwrite`, or the second night fails with `already exists (use --overwrite)`. If a run fails partway, the receiver keeps the bytes it got, and the next run [resumes](#resume-behavior) with only the rest.
+
+### Send CI artifacts to a machine on your tailnet
+
+To copy build output from GitHub Actions to a machine on your Tailscale tailnet, join the tailnet with `tailscale/github-action` and run `send` with the password from a repository secret.
+
+```yaml
+name: Ship build
+on:
+  push:
+    branches: [main]
+
+jobs:
+  ship:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run build
+      - uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+          ping: my-desktop.my-tailnet.ts.net
+      - run: npx --yes @nithin93/encrypted-share@3 send --target my-desktop.my-tailnet.ts.net:3000 --key "$ES_PASSWORD" ./dist
+        env:
+          ES_PASSWORD: ${{ secrets.ES_PASSWORD }}
+```
+
+The [tailscale/github-action README](https://github.com/tailscale/github-action#readme) explains how to create the OAuth client for `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_SECRET`. Your tailnet's access rules must let `tag:ci` reach TCP port 3000 on the receiver, and the receiver needs `serve --overwrite` because every run sends the same file names.
+
+### Receive files in Docker
+
+To run the receiver on a host that has Docker but not Node.js, run `npx` in the official `node:22-alpine` image and mount the output directory.
+
+```bash
+docker run --rm -p 3000:3000 -v "$PWD/received:/data" \
+  node:22-alpine npx --yes @nithin93/encrypted-share@3 serve --port 3000 --key <password> --out /data
+```
+
+Received files land in `./received` on the host. Ctrl+C stops the container, and because `--rm` deletes it, the next start downloads the package again.
+
 ## Security notes
 
 - Passwords are stretched with scrypt (N=16384, r=8, p=1) and a random 128-bit salt per transfer. Anyone who records a transfer can test password guesses offline, at the cost of one scrypt per guess, so use a long random password, unique per sharing peer.

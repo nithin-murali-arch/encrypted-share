@@ -1,6 +1,6 @@
 {
   "name": "@nithin93/encrypted-share",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "description": "Encrypted file transfer CLI and Node.js library: send files and folders over TCP with AES-256-GCM, resume, SHA-256 checks.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

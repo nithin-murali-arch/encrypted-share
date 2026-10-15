@@ -2,6 +2,12 @@
 
 All notable changes to `@nithin93/encrypted-share` are documented in this file.
 
+## [3.0.1] - 2026-10-15
+
+- Documentation only. The code is unchanged from 3.0.0.
+- README gained badges (CI, npm version, downloads, license, types, Node.js), `npx` usage, and an FAQ entry on running over Tailscale.
+- New README "Recipes" section: send a folder from a Node.js script with progress and exit codes, receive inside an Express app, back up a folder nightly with `cron`, send GitHub Actions artifacts over Tailscale, and receive in Docker.
+
 ## [3.0.0] - 2026-10-15
 
 - Breaking: new wire protocol ES03. encrypted-share 3.x cannot talk to 2.x peers. A 3.x server answers a 2.x sender with an error that tells it to upgrade, and a 3.x sender against a 2.x server fails with `handshake-failed`.
