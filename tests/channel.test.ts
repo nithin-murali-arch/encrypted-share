@@ -143,4 +143,26 @@ describe('SocketChannel', () => {
       await destroy(fx);
     }
   });
+
+  test('idle timeout also turns on TCP keepalive with the same delay', () => {
+    const socket = new Socket();
+    const keepAlive = jest.spyOn(socket, 'setKeepAlive');
+    try {
+      new SocketChannel(socket, 1234);
+      expect(keepAlive.mock.calls).toEqual([[true, 1234]]);
+    } finally {
+      socket.destroy();
+    }
+  });
+
+  test('no idle timeout leaves keepalive off', () => {
+    const socket = new Socket();
+    const keepAlive = jest.spyOn(socket, 'setKeepAlive');
+    try {
+      new SocketChannel(socket);
+      expect(keepAlive).not.toHaveBeenCalled();
+    } finally {
+      socket.destroy();
+    }
+  });
 });

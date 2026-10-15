@@ -32,11 +32,13 @@ export class SocketChannel {
         this.notify();
       });
       socket.setTimeout(idleTimeoutMs);
+      socket.setKeepAlive(true, idleTimeoutMs);
     }
   }
 
   // For waits on the peer's disk work (hashing partials or the final verify),
-  // when no bytes flow however healthy the peer is.
+  // when no bytes flow however healthy the peer is. Keepalive probes still
+  // detect a peer host that vanished.
   async withoutIdleTimeout<T>(work: () => Promise<T>): Promise<T> {
     if (this.idleTimeoutMs === undefined) return work();
     this.socket.setTimeout(0);

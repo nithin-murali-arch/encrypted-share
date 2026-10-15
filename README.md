@@ -120,7 +120,7 @@ await server.close();
 
 `startServer` resolves with a handle that has the bound `port` and a `close()` method. `sendFiles` resolves with a report listing the files and bytes sent, and rejects with a `TransferError` on failure.
 
-Both accept `idleTimeoutMs` (default `60000`). A side that receives nothing from its peer for that long closes the connection, and `sendFiles` rejects with code `timeout`. The timer is off while one side waits for the receiver to hash files: before the receiver answers the header, and after the last chunk until the result arrives.
+Both accept `idleTimeoutMs` (default `60000`). A side that receives nothing from its peer for that long closes the connection, and `sendFiles` rejects with code `timeout`. The timer is off while one side waits for the receiver to hash files: before the receiver answers the header, and after the last chunk until the result arrives. During those waits, TCP keepalive detects a receiver host that has gone away. Keepalive starts probing after `idleTimeoutMs`, but the probe interval and count are operating-system defaults, so detection takes minutes.
 
 ## Recipes
 

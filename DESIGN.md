@@ -135,7 +135,13 @@ unauthenticated connections that stall partway through a frame. The timer is
 suspended while the receiver hashes from disk, because no bytes flow then:
 around `PartialStore.prepare` and `verifyAndLand` on the server, and while the
 client waits for RESUME and RESULT. A slow hash would otherwise fail the
-sender with `timeout` after the receiver had already landed the files.
+sender with `timeout` after the receiver had already landed the files. A
+channel with an idle timeout also enables TCP keepalive with the same initial
+delay. A live peer answers keepalive probes without sending data, so a long
+hash is unaffected. A peer host that vanishes without FIN or RST (power loss,
+dropped network) fails the read once the probes go unanswered. The probe
+interval and count are OS defaults, so that detection takes minutes, not
+`idleTimeoutMs`.
 
 ### Unchanged from ES02
 

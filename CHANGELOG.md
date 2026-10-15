@@ -4,7 +4,7 @@ All notable changes to `@nithin93/encrypted-share` are documented in this file.
 
 ## [Unreleased]
 
-- Fixed a false `timeout` on large transfers. The receiver hashes every file after the last chunk, and no bytes flow while it does. If that took longer than `idleTimeoutMs` (about 110 GiB at 60 s on a fast SSD, less on a slow disk), the sender failed with `timeout` while the receiver still landed the files. Both sides now suspend the idle timer while waiting on the receiver's hashing, before RESUME and before RESULT. A server that goes silent at those two points now makes the sender wait instead of failing.
+- Fixed a false `timeout` on large transfers. The receiver hashes every file after the last chunk, and no bytes flow while it does. If that took longer than `idleTimeoutMs` (about 110 GiB at 60 s on a fast SSD, less on a slow disk), the sender failed with `timeout` while the receiver still landed the files. Both sides now suspend the idle timer while waiting on the receiver's hashing, before RESUME and before RESULT. During those waits, TCP keepalive (enabled with the same initial delay) detects a peer host that has gone away. Detection takes minutes because the probe interval and count are OS defaults. A peer process that stays connected but goes silent at those two points now makes the other side wait instead of failing.
 
 ## [3.0.1] - 2026-10-15
 
