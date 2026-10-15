@@ -1,12 +1,13 @@
 import { createHash } from 'crypto';
 import { mkdtempSync, mkdirSync, readdirSync, readFileSync, existsSync, writeFileSync } from 'fs';
-import { connect } from 'net';
+import { connect, createServer, Socket } from 'net';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { SocketChannel } from '../src/channel';
 import { clientHandshake } from '../src/client';
+import { randomSalt, randomServerNonce } from '../src/crypto';
 import { sendFiles } from '../src/index';
-import { FrameType, TransferError } from '../src/protocol';
+import { encodeHello, FrameType, HELLO_LENGTH, TransferError } from '../src/protocol';
 import { SecureChannel } from '../src/secure-channel';
 import { startServer, ServerHandle } from '../src/index';
 import { PartialStore } from '../src/store';
@@ -26,7 +27,7 @@ afterEach(async () => {
 
 async function withServer(
   outDir: string,
-  opts: { password?: string; overwrite?: boolean } = {},
+  opts: { password?: string; overwrite?: boolean; idleTimeoutMs?: number } = {},
 ): Promise<{ port: number; log: string[] }> {
   const log: string[] = [];
   const handle = await startServer({
@@ -34,6 +35,7 @@ async function withServer(
     password: opts.password ?? 'test-password',
     outDir,
     overwrite: opts.overwrite,
+    idleTimeoutMs: opts.idleTimeoutMs,
     onTransfer: (m) => log.push(m),
   });
   servers.push(handle);
@@ -45,6 +47,17 @@ async function openSession(port: number, password = 'test-password'): Promise<{ 
   await new Promise<void>((resolve) => socket.once('connect', () => resolve()));
   const ch = new SocketChannel(socket);
   return { ch, sc: await clientHandshake(ch, password) };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function closedWithin(socket: Socket, ms: number): Promise<boolean> {
+  return Promise.race([
+    new Promise<boolean>((resolve) => socket.once('close', () => resolve(true))),
+    sleep(ms).then(() => false),
+  ]);
 }
 
 function makeTree(): string {
@@ -211,6 +224,48 @@ describe('e2e', () => {
     const out = mkdtempSync(join(tmpdir(), 'es-e2e-out-'));
     const { port } = await withServer(out);
     await expect(startServer({ port, password: 'x', outDir: out })).rejects.toThrow();
+  });
+
+  test('server closes a connection that goes idle after the hello', async () => {
+    const out = mkdtempSync(join(tmpdir(), 'es-e2e-out-'));
+    const { port, log } = await withServer(out, { idleTimeoutMs: 200 });
+    const socket = connect(port, '127.0.0.1');
+    socket.on('error', () => {});
+    const received: Buffer[] = [];
+    socket.on('data', (chunk: Buffer) => received.push(chunk));
+    socket.write(encodeHello(randomSalt()));
+    try {
+      expect(await closedWithin(socket, 2000)).toBe(true);
+    } finally {
+      socket.destroy();
+    }
+    expect(Buffer.concat(received).length).toBe(HELLO_LENGTH);
+    expect(log).toEqual(['transfer failed: no data from the peer for 0.2 s']);
+    expect(readdirSync(out)).toEqual([]);
+  });
+
+  test('sendFiles fails with timeout when the server goes silent after the hello', async () => {
+    const accepted: Socket[] = [];
+    const silent = createServer((socket) => {
+      accepted.push(socket);
+      socket.on('error', () => {});
+      socket.once('data', () => socket.write(encodeHello(randomServerNonce())));
+    });
+    await new Promise<void>((resolve) => silent.listen(0, '127.0.0.1', () => resolve()));
+    const port = (silent.address() as { port: number }).port;
+    try {
+      const outcome = await Promise.race([
+        sendFiles({ host: '127.0.0.1', port, password: 'x', path: makeTree(), idleTimeoutMs: 200 }).then(
+          () => 'resolved',
+          (err: TransferError) => `${err.code}: ${err.message}`,
+        ),
+        sleep(3000).then(() => 'still waiting after 3 s'),
+      ]);
+      expect(outcome).toBe('timeout: no data from the peer for 0.2 s');
+    } finally {
+      for (const s of accepted) s.destroy();
+      await new Promise<void>((resolve) => silent.close(() => resolve()));
+    }
   });
 
   test('unreachable target fails fast', async () => {

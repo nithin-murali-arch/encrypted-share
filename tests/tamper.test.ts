@@ -3,7 +3,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'f
 import { connect, createServer, Server, Socket } from 'net';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { sendFiles, startServer, ServerHandle, TransferError } from '../src/index';
+import { sendFiles, startServer, ServerHandle, ServerOptions, TransferError } from '../src/index';
 import { HELLO_LENGTH } from '../src/protocol';
 
 jest.setTimeout(15000);
@@ -40,13 +40,17 @@ async function listen(server: Server): Promise<number> {
   return (server.address() as { port: number }).port;
 }
 
-async function withServer(outDir: string): Promise<{ port: number; log: string[] }> {
+async function withServer(
+  outDir: string,
+  extra: Partial<ServerOptions> = {},
+): Promise<{ port: number; log: string[] }> {
   const log: string[] = [];
   const handle: ServerHandle = await startServer({
     port: 0,
     password: PASSWORD,
     outDir,
     onTransfer: (m) => log.push(m),
+    ...extra,
   });
   cleanups.push(() => handle.close());
   return { port: handle.port, log };
@@ -93,6 +97,77 @@ async function startProxy(
   });
   const port = await listen(server);
   return { port, c2s, s2c };
+}
+
+interface HeldConnection {
+  client: Socket;
+  upstream: Socket;
+  held: Buffer[];
+}
+
+interface HoldingProxy {
+  port: number;
+  holdAfterFrames: number | null;
+  connections: HeldConnection[];
+}
+
+// Holds every client frame past holdAfterFrames and keeps the upstream connection
+// open after the client gives up, so the frames can be delivered later.
+async function startHoldingProxy(targetPort: number): Promise<HoldingProxy> {
+  const proxy: HoldingProxy = { port: 0, holdAfterFrames: null, connections: [] };
+  const server = createServer((client) => {
+    const upstream = connect(targetPort, '127.0.0.1');
+    const conn: HeldConnection = { client, upstream, held: [] };
+    proxy.connections.push(conn);
+    const holdAfter = proxy.holdAfterFrames;
+    let pending = Buffer.alloc(0);
+    let helloSent = false;
+    let seen = 0;
+    client.on('data', (chunk: Buffer) => {
+      pending = Buffer.concat([pending, chunk]);
+      if (!helloSent) {
+        if (pending.length < HELLO_LENGTH) return;
+        upstream.write(pending.subarray(0, HELLO_LENGTH));
+        pending = pending.subarray(HELLO_LENGTH);
+        helloSent = true;
+      }
+      while (pending.length >= 4 && pending.length >= 4 + pending.readUInt32BE(0)) {
+        const frame = pending.subarray(0, 4 + pending.readUInt32BE(0));
+        pending = pending.subarray(frame.length);
+        if (holdAfter !== null && seen >= holdAfter) conn.held.push(frame);
+        else upstream.write(frame);
+        seen += 1;
+      }
+    });
+    upstream.on('data', (chunk: Buffer) => {
+      if (!client.destroyed) client.write(chunk);
+    });
+    client.on('error', () => {});
+    upstream.on('error', () => {});
+    upstream.on('close', () => client.destroy());
+    client.on('close', () => {
+      if (holdAfter === null) upstream.end();
+    });
+  });
+  proxy.port = await listen(server);
+  cleanups.push(() => {
+    for (const c of proxy.connections) {
+      c.client.destroy();
+      c.upstream.destroy();
+    }
+  });
+  return proxy;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function until(condition: () => boolean): Promise<void> {
+  for (let waited = 0; !condition(); waited += 10) {
+    if (waited > 5000) throw new Error('condition not met within 5 s');
+    await sleep(10);
+  }
 }
 
 function flipByteIn(target: number): FrameHook {
@@ -316,5 +391,39 @@ describe('ES03 against a man in the middle', () => {
     expect(err.message).toBe(
       'server closed the connection during the handshake; it may run encrypted-share 2.x or an incompatible version',
     );
+  });
+
+  test('10. frames held back and released after a newer transfer cannot revert the file', async () => {
+    const out = emptyDir();
+    const { port, log } = await withServer(out, { overwrite: true });
+    const proxy = await startHoldingProxy(port);
+
+    proxy.holdAfterFrames = 1;
+    const first = rejection(
+      sendFiles({ host: '127.0.0.1', port: proxy.port, password: PASSWORD, path: sourceFile('config.txt', 'v1 old config') }),
+    );
+    await until(() => proxy.connections[0]?.held.length === 2);
+    const held = proxy.connections[0];
+    held.client.destroy();
+    expect((await first).code).toBe('truncated');
+
+    proxy.holdAfterFrames = null;
+    await sendFiles({ host: '127.0.0.1', port: proxy.port, password: PASSWORD, path: sourceFile('config.txt', 'v2 new config') });
+    expect(readFileSync(join(out, 'config.txt'), 'utf8')).toBe('v2 new config');
+
+    proxy.holdAfterFrames = 1;
+    const later = rejection(
+      sendFiles({ host: '127.0.0.1', port: proxy.port, password: PASSWORD, path: sourceFile('other.txt', 'later') }),
+    );
+    await until(() => proxy.connections[2]?.held.length === 2);
+    expect(readdirSync(out).sort()).toEqual(['.es-partial', 'config.txt']);
+
+    for (const frame of held.held) held.upstream.write(frame);
+    await sleep(300);
+    expect(readFileSync(join(out, 'config.txt'), 'utf8')).toBe('v2 new config');
+    proxy.connections[2].client.destroy();
+    expect((await later).code).toBe('truncated');
+    expect(log).toContain('superseded an unfinished transfer');
+    expect(log.filter((m) => m.startsWith('transfer complete'))).toEqual(['transfer complete: 1 file(s) verified']);
   });
 });
