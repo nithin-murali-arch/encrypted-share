@@ -1,0 +1,6 @@
+{
+  "name": "encrypted-share-offline-install-example",
+  "private": true,
+  "type": "module",
+  "scripts": { "verify": "node verify.mjs" }
+}
