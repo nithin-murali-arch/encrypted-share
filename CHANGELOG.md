@@ -2,6 +2,17 @@
 
 All notable changes to `@nithin93/encrypted-share` are documented in this file.
 
+## [3.0.0] - 2026-10-15
+
+- Breaking: new wire protocol ES03. encrypted-share 3.x cannot talk to 2.x peers. A 3.x server answers a 2.x sender with an error that tells it to upgrade, and a 3.x sender against a 2.x server fails with `handshake-failed`.
+- Breaking: library types changed. `TransferHeader` no longer has `salt` or `baseNonce`, and `ChunkHeader` is no longer exported.
+- Every frame after a 22-byte hello is now encrypted and authenticated, including the file list and the server's resume and result messages. File names, sizes, and SHA-256 hashes no longer appear on the wire.
+- Each direction has its own key derived with HKDF-SHA256, and frames use a counter nonce. A forged "verified" result, an altered resume offset, or a dropped, reordered, or replayed frame now fails the transfer.
+- The server mixes a random per-connection nonce into the keys, so a recorded transfer replayed to the server is rejected.
+- A wrong password now fails with `server closed the connection after the header; check that both sides use the same password`.
+- `sealChunk` and `openChunk` take an optional `aad` argument. `openChunk` accepts only 16-byte tags.
+- `encrypted-share --version` reads `package.json` with no hardcoded fallback.
+
 ## [2.0.1] - 2026-10-15
 
 - Fix: `serve` now saves to the `outputDir` from the config file. Before, the `--out` default of `./received-files` always won, so the config value was ignored.

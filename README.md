@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/nithin-murali-arch/encrypted-share/actions/workflows/ci.yml/badge.svg)](https://github.com/nithin-murali-arch/encrypted-share/actions/workflows/ci.yml) [![npm version](https://img.shields.io/npm/v/@nithin93%2Fencrypted-share.svg)](https://www.npmjs.com/package/@nithin93/encrypted-share)
 
-`encrypted-share` is a command-line tool and Node.js library for sending files and folders between two machines over TCP, with file contents encrypted with AES-256-GCM and a shared password. It checks a SHA-256 hash for every file before the file lands, resumes interrupted transfers, has no native dependencies, and needs no third-party server or account.
+`encrypted-share` is a command-line tool and Node.js library for sending files and folders between two machines over TCP. Everything after a short handshake, file names included, is encrypted and authenticated with AES-256-GCM and a shared password. It checks a SHA-256 hash for every file before the file lands, resumes interrupted transfers, has no native dependencies, and needs no third-party server or account.
 
 Protocol details live in [DESIGN.md](DESIGN.md). Release notes are in [CHANGELOG.md](CHANGELOG.md).
 
@@ -40,7 +40,7 @@ The sender prints `Verified by server` when the receiver has checked every file.
 
 ## Features
 
-- AES-256-GCM on every chunk of file data, with a key derived from the password by scrypt and a fresh random salt per transfer.
+- AES-256-GCM on every frame after the handshake: the file list, the server's replies, and the file data. Keys come from the password through scrypt and HKDF, with a fresh random salt per transfer and a fresh server nonce per connection.
 - Per-file SHA-256 verification. The server writes a file to the output directory only after its hash matches the manifest, then reports the result to the client.
 - Resume. A re-run of an interrupted `send` continues from the bytes the server already holds.
 - Files and folders, including empty files and empty directories. Symlinks are skipped with a warning.
@@ -111,9 +111,12 @@ await server.close();
 ## Security notes
 
 - Passwords are stretched with scrypt (N=16384, r=8, p=1) and a random 128-bit salt per transfer. Use a long, unique password per sharing peer.
-- Each chunk of file data carries a unique nonce and a 128-bit GCM auth tag. A tampered chunk aborts the transfer, and nothing unverified is written to the output directory. Files land atomically after checksum verification.
-- Only the file data chunks are encrypted. The transfer header (file names, sizes, SHA-256 hashes) and the server's resume and result messages are plain JSON on the wire. An eavesdropper can read the names and sizes of the files you send. A man in the middle can forge the result message, so "Verified by server" does not prove the receiver's state against an active attacker.
-- This is a pre-shared-key tool. There is no forward secrecy and no peer authentication beyond the shared password. It protects file contents in transit against eavesdroppers, not against a malicious peer who knows the password.
+- After a 22-byte hello in each direction, every frame is encrypted and authenticated with AES-256-GCM. That covers the file list, the server's resume and result messages, and the file data, so file names, sizes, and SHA-256 hashes are hidden from the network.
+- Each direction has its own key, and the nonce is a frame counter. A tampered, dropped, reordered, or replayed frame aborts the transfer, and a forged result message fails authentication, so "Verified by server" holds against an active attacker who does not know the password. Nothing unverified is written to the output directory. Files land atomically after checksum verification.
+- The server picks a random nonce for every connection and mixes it into the keys. A recorded transfer replayed to the server fails on its first frame.
+- The total transfer size and its timing remain visible from the traffic volume.
+- This is a pre-shared-key tool. There is no forward secrecy and no peer authentication beyond the shared password. Anyone who knows the password can send files to your server, and anyone who records a transfer and later learns the password can decrypt it.
+- encrypted-share 3.x speaks wire protocol ES03 and cannot talk to 2.x peers. A 3.x server tells a 2.x sender to upgrade. A 3.x sender against a 2.x server fails with a handshake error.
 - Only run `serve` on networks you trust, or tunnel it (SSH or WireGuard).
 
 ## When to use it
@@ -122,7 +125,7 @@ await server.close();
 - You want one command that sends a folder, verifies every file, and can pick up where an interrupted transfer stopped.
 - You want to call the transfer from a Node.js program with `startServer` and `sendFiles`.
 - Do not use it for machines on different networks behind NAT with no port forwarding. The tool has no relay and no NAT traversal, so the connection never opens. Use croc or magic-wormhole instead.
-- Do not use it when you need the file names hidden from the network, or protection against an active attacker on the path. See the security notes.
+- Do not use it when you need to hide how much data you send, or when you need forward secrecy or a stronger identity check than a shared password. See the security notes.
 
 ## Alternatives
 
@@ -140,7 +143,7 @@ magic-wormhole and croc are the better choice for two machines on different netw
 
 ### How do I send files between two computers securely from the command line?
 
-Run `encrypted-share serve` on the receiver and `encrypted-share send` on the sender with the same `--key`. The sender connects to the receiver's address and port, and file contents are encrypted with AES-256-GCM before they leave the sender.
+Run `encrypted-share serve` on the receiver and `encrypted-share send` on the sender with the same `--key`. The sender connects to the receiver's address and port. File names, sizes, and contents are encrypted with AES-256-GCM before they leave the sender.
 
 ```bash
 encrypted-share serve --port 3000 --key <password>
@@ -165,11 +168,11 @@ It works anywhere the sender can open a TCP connection to the receiver's port, w
 
 ### How is the key derived from the password?
 
-The key is `scrypt(password, salt, 32 bytes)` with N=16384, r=8, p=1. The client generates a fresh random 16-byte salt for each transfer and sends it in the header. Every chunk then gets its own AES-256-GCM nonce.
+The client computes `scrypt(password, salt, 32 bytes)` with N=16384, r=8, p=1. It generates a fresh random 16-byte salt for each transfer and sends it in its hello. The server answers with a random 16-byte nonce. HKDF-SHA256 turns the scrypt output, the salt, and the server nonce into one key per direction. Every frame then gets its own AES-256-GCM nonce from a counter.
 
 ### What happens if the password is wrong?
 
-The transfer fails, nothing lands in the output directory, and `send` exits with code `2`. The server logs `chunk authentication failed`, and the client shows a connection error because the server closes the connection.
+The transfer fails before any file data is sent, and nothing lands in the output directory. `send` exits with code `2` and prints `server closed the connection after the header; check that both sides use the same password`. The server logs `transfer failed: frame authentication failed`.
 
 ### How does it compare to croc or magic-wormhole?
 
@@ -192,7 +195,7 @@ npm test         # jest (unit, CLI, and TCP loopback e2e)
 npm run lint     # eslint
 ```
 
-Releases are cut by pushing a tag (`git tag v2.x.y && git push --tags`). CI builds, tests, and publishes to npm with provenance. npm trusted publishing (OIDC) must be configured once for the package.
+Releases are cut by pushing a tag (`git tag v3.x.y && git push --tags`). CI builds, tests, and publishes to npm with provenance. npm trusted publishing (OIDC) must be configured once for the package.
 
 ## License
 
