@@ -267,6 +267,24 @@ The [tailscale/github-action README](https://github.com/tailscale/github-action#
 npx @nithin93/encrypted-share@3 serve --host "$(tailscale ip -4)" --port 3000 --key <password> --overwrite
 ```
 
+### Recover a large transfer after a dropped connection
+
+The [large-file resume example](examples/large-file-resume/) creates a 2 GiB random file, terminates the sender halfway, and checks the resumed byte count and `cmp` result. Its full-size check is currently blocked by receiver buffering in 3.0.1. The example README records that failure and the separate backpressure prototype. Resume requires an unchanged source file.
+
+### Send files from a drop folder
+
+Run the [drop-folder example](examples/drop-folder/) to watch a scanner's output directory, wait for stable files, and send them through a serial queue. Successful files move to `sent/`. Connection failures retry from `.sending/`.
+
+Use unique filenames and write each file completely before moving it into the folder. If the receiver commits a file but its acknowledgement is lost, the script preserves the source for manual comparison. The example does not guarantee exactly-once delivery.
+
+### Notify a chat channel when files land
+
+Run the [webhook receiver example](examples/webhook-receiver/) with `WEBHOOK_URL`, `ES_PASSWORD`, and `ES_OUT_DIR`. It posts a JSON completion event after the receiver verifies a transfer. The example includes a local HTTP collector check. A failed webhook does not undo the received files and is not retried.
+
+### Add file transfer to an Electron app
+
+Run the [Electron sender example](examples/electron-send/) for a file picker, connection settings, and transfer progress. The main process calls `sendFiles`. A context-isolated renderer uses a narrow preload API. Run its `--smoke` mode for a real localhost transfer through IPC. This example requires Node.js 22.12 or later for Electron's installer.
+
 ### Transfer on a network with no internet access
 
 Use Node.js 20 or later on both machines. On a connected machine, build and pack this checkout. The resulting tarball bundles its runtime dependencies.
