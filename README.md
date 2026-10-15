@@ -108,16 +108,22 @@ await server.close();
 
 `startServer` resolves with a handle that has the bound `port` and a `close()` method. `sendFiles` resolves with a report listing the files and bytes sent, and rejects with a `TransferError` on failure.
 
+Both accept `idleTimeoutMs` (default `60000`). A side that receives nothing from its peer for that long closes the connection, and `sendFiles` rejects with code `timeout`.
+
 ## Security notes
 
-- Passwords are stretched with scrypt (N=16384, r=8, p=1) and a random 128-bit salt per transfer. Use a long, unique password per sharing peer.
-- After a 22-byte hello in each direction, every frame is encrypted and authenticated with AES-256-GCM. That covers the file list, the server's resume and result messages, and the file data, so file names, sizes, and SHA-256 hashes are hidden from the network.
-- Each direction has its own key, and the nonce is a frame counter. A tampered, dropped, reordered, or replayed frame aborts the transfer, and a forged result message fails authentication, so "Verified by server" holds against an active attacker who does not know the password. Nothing unverified is written to the output directory. Files land atomically after checksum verification.
+- Passwords are stretched with scrypt (N=16384, r=8, p=1) and a random 128-bit salt per transfer. Anyone who records a transfer can test password guesses offline, at the cost of one scrypt per guess, so use a long random password, unique per sharing peer.
+- After a 22-byte hello in each direction, every frame is encrypted and authenticated with AES-256-GCM. That covers the file list, the server's resume and result messages, and the file data, so file names, SHA-256 hashes, and file contents are hidden from the network.
+- Each direction has its own key, and the nonce is a frame counter. A tampered, dropped, reordered, or replayed frame aborts the transfer, and a forged result message fails authentication, so "Verified by server" holds against an active attacker who does not know the password.
+- No file appears at its final path until its SHA-256 matches the sender's. Data that has passed frame authentication but not the hash check waits in `<out>/.es-partial/`. Directories listed in the transfer are created before the files in them verify.
 - The server picks a random nonce for every connection and mixes it into the keys. A recorded transfer replayed to the server fails on its first frame.
-- The total transfer size and its timing remain visible from the traffic volume.
+- The server runs one transfer at a time. When a new transfer authenticates, the server closes any unfinished one, which then cannot write or land files. Frames an attacker held back from an abandoned transfer therefore cannot overwrite a file sent later.
+- Sizes stay visible. Frame lengths are not encrypted, and every file starts a new chunk, so an observer can work out the file count, each file's size, the combined length of the file names (from the size of the file list), and the total volume and timing.
 - This is a pre-shared-key tool. There is no forward secrecy and no peer authentication beyond the shared password. Anyone who knows the password can send files to your server, and anyone who records a transfer and later learns the password can decrypt it.
 - encrypted-share 3.x speaks wire protocol ES03 and cannot talk to 2.x peers. A 3.x server tells a 2.x sender to upgrade. A 3.x sender against a 2.x server fails with a handshake error.
 - Only run `serve` on networks you trust, or tunnel it (SSH or WireGuard).
+- The server has no connection cap. Every incoming hello costs it one scrypt run (about 19 ms) before the peer proves it knows the password, and it buffers up to 4 MiB of file list per connection. This is unchanged from 2.x.
+- Files named `__proto__`, or with a name that starts with `..`, cannot be transferred. This is unchanged from 2.x.
 
 ## When to use it
 
@@ -125,7 +131,7 @@ await server.close();
 - You want one command that sends a folder, verifies every file, and can pick up where an interrupted transfer stopped.
 - You want to call the transfer from a Node.js program with `startServer` and `sendFiles`.
 - Do not use it for machines on different networks behind NAT with no port forwarding. The tool has no relay and no NAT traversal, so the connection never opens. Use croc or magic-wormhole instead.
-- Do not use it when you need to hide how much data you send, or when you need forward secrecy or a stronger identity check than a shared password. See the security notes.
+- Do not use it when you need to hide how much data you send or how large each file is, or when you need forward secrecy or a stronger identity check than a shared password. See the security notes.
 
 ## Alternatives
 
@@ -143,7 +149,7 @@ magic-wormhole and croc are the better choice for two machines on different netw
 
 ### How do I send files between two computers securely from the command line?
 
-Run `encrypted-share serve` on the receiver and `encrypted-share send` on the sender with the same `--key`. The sender connects to the receiver's address and port. File names, sizes, and contents are encrypted with AES-256-GCM before they leave the sender.
+Run `encrypted-share serve` on the receiver and `encrypted-share send` on the sender with the same `--key`. The sender connects to the receiver's address and port. File names, hashes, and contents are encrypted with AES-256-GCM before they leave the sender. File sizes and the file count can be read from the frame lengths.
 
 ```bash
 encrypted-share serve --port 3000 --key <password>
