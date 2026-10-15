@@ -1,6 +1,6 @@
 import { createServer } from 'net';
 import type { Socket } from 'net';
-import { SocketChannel } from './channel';
+import { DEFAULT_IDLE_TIMEOUT_MS, SocketChannel } from './channel';
 import { deriveKey, deriveSessionKeys, randomServerNonce } from './crypto';
 import {
   CHUNK_FRAME_OVERHEAD,
@@ -23,6 +23,7 @@ export interface ServerOptions {
   password: string | Buffer;
   outDir: string;
   overwrite?: boolean;
+  idleTimeoutMs?: number;
   onTransfer?: (msg: string) => void;
 }
 
@@ -43,14 +44,43 @@ async function rejectLegacyClient(ch: SocketChannel): Promise<void> {
   await ch.end();
 }
 
-async function handleConnection(
-  socket: Socket,
-  password: string | Buffer,
-  outDir: string,
-  overwrite: boolean,
-  log: (msg: string) => void,
-): Promise<void> {
-  const ch = new SocketChannel(socket);
+// All transfers share <out>/.es-partial, so only the newest authenticated one may
+// write there. Without this, frames an attacker held back from an abandoned
+// session could land an old file over a newer one.
+class TransferSlot {
+  private holder: Socket | null = null;
+
+  claim(socket: Socket, log: (msg: string) => void): void {
+    if (this.holder !== null) {
+      this.holder.destroy();
+      log('superseded an unfinished transfer');
+    }
+    this.holder = socket;
+  }
+
+  ensureHeldBy(socket: Socket): void {
+    if (this.holder !== socket) {
+      throw new TransferError('superseded', 'a newer transfer replaced this one');
+    }
+  }
+
+  release(socket: Socket): void {
+    if (this.holder === socket) this.holder = null;
+  }
+}
+
+interface ConnectionContext {
+  password: string | Buffer;
+  outDir: string;
+  overwrite: boolean;
+  idleTimeoutMs: number;
+  log: (msg: string) => void;
+  slot: TransferSlot;
+}
+
+async function handleConnection(socket: Socket, ctx: ConnectionContext): Promise<void> {
+  const { log, slot } = ctx;
+  const ch = new SocketChannel(socket, ctx.idleTimeoutMs);
   try {
     const prefix = await ch.readExact(HELLO_PREFIX_LENGTH);
     if (parseHelloPrefix(prefix) === 'legacy') {
@@ -61,14 +91,15 @@ async function handleConnection(
     const clientSalt = await ch.readExact(SALT_LENGTH);
     const serverNonce = randomServerNonce();
     await ch.write(encodeHello(serverNonce));
-    const keys = deriveSessionKeys(deriveKey(password, clientSalt), clientSalt, serverNonce);
+    const keys = deriveSessionKeys(deriveKey(ctx.password, clientSalt), clientSalt, serverNonce);
     const sc = new SecureChannel(ch, keys, 'server');
 
     const { body: header } = await sc.recv([FrameType.HEADER]);
     if (header.chunkSize > MAX_CHUNK_BYTES) {
       throw new TransferError('bad-header', `chunkSize ${header.chunkSize} exceeds max`);
     }
-    const store = new PartialStore({ outDir, overwrite });
+    slot.claim(socket, log);
+    const store = new PartialStore({ outDir: ctx.outDir, overwrite: ctx.overwrite });
     let received: Record<string, number>;
     try {
       received = await store.prepare(header.files, header.dirs);
@@ -82,6 +113,7 @@ async function handleConnection(
     const maxChunkFrame = header.chunkSize + CHUNK_FRAME_OVERHEAD;
     for (;;) {
       const frame = await sc.recv([FrameType.CHUNK, FrameType.DONE], maxChunkFrame);
+      slot.ensureHeldBy(socket);
       if (frame.type === FrameType.DONE) break;
       await store.append(frame.body.fileIndex, frame.body.offset, frame.body.data);
     }
@@ -94,19 +126,26 @@ async function handleConnection(
         : `transfer failed verification: ${result.failed.map((f) => f.path).join(', ')}`,
     );
   } finally {
+    slot.release(socket);
     ch.destroy();
   }
 }
 
 export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
   const log = opts.onTransfer ?? ((): void => {});
+  const ctx: ConnectionContext = {
+    password: opts.password,
+    outDir: opts.outDir,
+    overwrite: opts.overwrite === true,
+    idleTimeoutMs: opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS,
+    log,
+    slot: new TransferSlot(),
+  };
   const server = createServer((socket) => {
-    handleConnection(socket, opts.password, opts.outDir, opts.overwrite === true, log).catch(
-      (err: Error) => {
-        log(`transfer failed: ${err.message}`);
-        socket.destroy();
-      },
-    );
+    handleConnection(socket, ctx).catch((err: Error) => {
+      log(`transfer failed: ${err.message}`);
+      socket.destroy();
+    });
   });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);

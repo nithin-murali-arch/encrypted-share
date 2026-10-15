@@ -50,7 +50,7 @@ async function openSession(port: number, password = 'test-password'): Promise<{ 
 }
 
 function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms).unref());
 }
 
 function closedWithin(socket: Socket, ms: number): Promise<boolean> {

@@ -1,7 +1,7 @@
 import { open } from 'fs/promises';
 import { connect } from 'net';
 import { join } from 'path';
-import { SocketChannel } from './channel';
+import { DEFAULT_IDLE_TIMEOUT_MS, SocketChannel } from './channel';
 import { deriveKey, deriveSessionKeys, randomSalt } from './crypto';
 import { buildManifest, WarnFn } from './manifest';
 import {
@@ -21,6 +21,7 @@ export interface SendOptions {
   password: string | Buffer;
   path: string;
   chunkSize?: number;
+  idleTimeoutMs?: number;
   onProgress?: (sentBytes: number, totalBytes: number) => void;
   onWarn?: WarnFn;
 }
@@ -78,7 +79,7 @@ export async function sendFiles(opts: SendOptions): Promise<SendReport> {
     socket.once('error', onError);
   });
 
-  const ch = new SocketChannel(socket);
+  const ch = new SocketChannel(socket, opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS);
   try {
     const sc = await clientHandshake(ch, opts.password);
     await sc.send(FrameType.HEADER, { chunkSize, files: manifest.files, dirs: manifest.dirs });
