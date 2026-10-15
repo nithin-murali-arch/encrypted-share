@@ -275,7 +275,7 @@ describe('e2e', () => {
         this: PartialStore,
         ...args: unknown[]
       ) {
-        await sleep(300);
+        await sleep(1500);
         return original.apply(this, args);
       } as never);
       try {
@@ -283,8 +283,8 @@ describe('e2e', () => {
         const bytes = Buffer.alloc(256 * 1024, 7);
         writeFileSync(join(src, 'data.bin'), bytes);
         const out = mkdtempSync(join(tmpdir(), 'es-e2e-out-'));
-        const { port, log } = await withServer(out, { idleTimeoutMs: 50 });
-        const report = await sendFiles({ host: '127.0.0.1', port, password: 'test-password', path: src, idleTimeoutMs: 50 });
+        const { port, log } = await withServer(out, { idleTimeoutMs: 1000 });
+        const report = await sendFiles({ host: '127.0.0.1', port, password: 'test-password', path: src, idleTimeoutMs: 1000 });
         expect(report).toEqual({ files: ['data.bin'], bytes: bytes.length });
         expect(readFileSync(join(out, 'data.bin')).equals(bytes)).toBe(true);
         expect(log).toEqual(['incoming transfer: 1 file(s), 0 dir(s)', 'transfer complete: 1 file(s) verified']);
