@@ -17,6 +17,13 @@ Protocol details live in [DESIGN.md](DESIGN.md). Release notes are in [CHANGELOG
 npm install -g @nithin93/encrypted-share
 ```
 
+Or run it without installing, with `npx`. Use the same major version on both machines, because 3.x cannot talk to 2.x:
+
+```bash
+npx @nithin93/encrypted-share@3 serve --port 3000 --key <password>
+npx @nithin93/encrypted-share@3 send --target 192.0.2.10:3000 --key <password> ./data
+```
+
 Node.js 20 or later is required (the `engines` field). To run from source:
 
 ```bash
@@ -135,20 +142,20 @@ Both accept `idleTimeoutMs` (default `60000`). A side that receives nothing from
 - You control both machines, can install Node.js on both, and the receiver's port is reachable from the sender (same LAN, VPN, or a forwarded port).
 - You want one command that sends a folder, verifies every file, and can pick up where an interrupted transfer stopped.
 - You want to call the transfer from a Node.js program with `startServer` and `sendFiles`.
-- Do not use it for machines on different networks behind NAT with no port forwarding. The tool has no relay and no NAT traversal, so the connection never opens. Use croc or magic-wormhole instead.
+- Machines on different networks work when both are on the same Tailscale tailnet or another VPN. Without a VPN and without port forwarding, the connection never opens, because the tool has no relay and no NAT traversal of its own. Use croc or magic-wormhole in that case.
 - Do not use it when you need to hide how much data you send or how large each file is, or when you need forward secrecy or a stronger identity check than a shared password. See the security notes.
 
 ## Alternatives
 
 | Tool | Interface | Needs a relay or rendezvous server | Works across NAT without port forwarding | Needs an account on the other machine | Install |
 | --- | --- | --- | --- | --- | --- |
-| `encrypted-share` | CLI, Node.js library | No | No (receiver's port must be reachable) | No | npm |
+| `encrypted-share` | CLI, Node.js library | No | Only over a VPN such as Tailscale (otherwise the receiver's port must be reachable) | No | npm, or `npx` with no install |
 | magic-wormhole | CLI, Python library | Yes (rendezvous server, transit relay as fallback) | Yes | No | pip |
 | croc | CLI | Yes (relay server) | Yes | No | Single Go binary |
 | scp or rsync over SSH | CLI | No | No (SSH port must be reachable) | Yes (SSH login) | Preinstalled on most Unix systems |
 | LocalSend | GUI app | No | No (local network discovery) | No | App installers |
 
-magic-wormhole and croc are the better choice for two machines on different networks, because they connect through a server and need no port forwarding. `rsync` over SSH is the better choice when you already have SSH access, because it needs no extra software. LocalSend is the better choice when you want a graphical app on a local network. `encrypted-share` fits when both ends can run Node.js, the receiver's port is reachable, and you want no third-party server or account in the path.
+magic-wormhole and croc are the better choice for two machines on different networks that do not share a VPN, because they connect through a server and need no port forwarding. `rsync` over SSH is the better choice when you already have SSH access, because it needs no extra software. LocalSend is the better choice when you want a graphical app on a local network. `encrypted-share` fits when both ends can run Node.js, the receiver's port is reachable, and you want no third-party server or account in the path.
 
 ## FAQ
 
@@ -175,7 +182,21 @@ Yes. Re-run the same `send` command and the server reports how many bytes it alr
 
 ### Does it work across the internet or only on a LAN?
 
-It works anywhere the sender can open a TCP connection to the receiver's port, which includes the internet. It has no relay and no NAT traversal, so a receiver behind NAT needs a forwarded port, a VPN, or an SSH tunnel. If neither machine can accept inbound connections, use croc or magic-wormhole.
+It works anywhere the sender can open a TCP connection to the receiver's port, which includes the internet. It has no relay and no NAT traversal, so a receiver behind NAT needs a forwarded port, a VPN such as Tailscale, or an SSH tunnel. If neither machine can accept inbound connections and you cannot use a VPN, use croc or magic-wormhole.
+
+### Does it work over Tailscale?
+
+Yes. `serve` listens on every network interface, including the Tailscale one, and `send` connects to whatever address `--target` names. Put both machines on the same tailnet and use the receiver's Tailscale IP or MagicDNS name. Tailscale handles NAT traversal, so no port forwarding is needed.
+
+```bash
+# on the receiver (MagicDNS name: my-desktop)
+npx @nithin93/encrypted-share@3 serve --port 3000 --key <password>
+
+# on the sender, from any network
+npx @nithin93/encrypted-share@3 send --target my-desktop:3000 --key <password> ./data
+```
+
+If your tailnet uses access control rules, they must allow the sender to reach TCP port 3000 on the receiver. Tailscale encrypts the link with WireGuard. `encrypted-share` adds its own password-based encryption, a SHA-256 check on every file, and resume on top of that. Because `serve` listens on every interface, it also accepts connections from the receiver's local network, and the password is what keeps other devices out.
 
 ### How is the key derived from the password?
 
