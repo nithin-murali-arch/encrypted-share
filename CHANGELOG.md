@@ -2,6 +2,13 @@
 
 All notable changes to `@nithin93/encrypted-share` are documented in this file.
 
+## [3.1.0] - 2026-10-15
+
+- New `-H, --host <address>` option on `serve`, `host` in the config file, and `host` on `startServer`. The server listens only on that address, for example `127.0.0.1` or a Tailscale IP, so other interfaces such as the local network cannot reach it. `--host` overrides the config file. Without it, the server still listens on all interfaces.
+- The handle from `startServer` now includes the bound `host`.
+- `serve` prints the bound address and port, for example `Server listening on 127.0.0.1:3000`. Without `--host` it shows the all-interfaces address, such as `[::]:3000`.
+- README shows `--host` in the Tailscale FAQ and the CI artifacts recipe, and explains how to limit the Docker receiver to one host address with the port mapping instead.
+
 ## [3.0.1] - 2026-10-15
 
 - Documentation only. The code is unchanged from 3.0.0.
