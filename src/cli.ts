@@ -9,14 +9,6 @@ import { loadConfig } from './config';
 import { TransferError } from './protocol';
 import { startServer } from './server';
 
-function pkgVersion(): string {
-  try {
-    return (require('../package.json') as { version: string }).version;
-  } catch {
-    return '2.0.1';
-  }
-}
-
 function fail(code: number, message: string): never {
   console.error(chalk.red(message));
   process.exit(code);
@@ -46,7 +38,7 @@ export function createProgram(): Command {
   program
     .name('encrypted-share')
     .description('Securely share files via TCP with AES-256-GCM encryption')
-    .version(pkgVersion());
+    .version((require('../package.json') as { version: string }).version);
 
   program
     .command('serve')
