@@ -159,6 +159,22 @@ describe('FrameReader', () => {
     expect(r.takeFrame()).toBeNull();
   });
 
+  test('assembles a frame from many chunks and keeps the bytes that follow it', () => {
+    const r = new FrameReader();
+    const body = Buffer.alloc(4 * 1024 * 1024);
+    for (let i = 0; i < body.length; i++) body[i] = i % 251;
+    const stream = Buffer.concat([Buffer.from([0, 0x40, 0, 0]), body, Buffer.from('00000002', 'hex')]);
+    r.push(stream.subarray(0, 1));
+    expect(r.takeFrame(body.length)).toBeNull();
+    for (let at = 1; at < stream.length; at += 64 * 1024) r.push(stream.subarray(at, at + 64 * 1024));
+    expect(r.takeFrame(body.length)?.equals(body)).toBe(true);
+    expect(r.buffered).toBe(4);
+    expect(r.takeFrame()).toBeNull();
+    r.push(Buffer.from('7879', 'hex'));
+    expect(r.takeFrame()).toEqual(Buffer.from('xy'));
+    expect(r.buffered).toBe(0);
+  });
+
   test('rejects oversized frames', () => {
     const r = new FrameReader();
     const len = Buffer.alloc(4);

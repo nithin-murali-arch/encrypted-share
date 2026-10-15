@@ -83,33 +83,51 @@ export class TransferError extends Error {
 }
 
 export class FrameReader {
-  private buf: Buffer = Buffer.alloc(0);
+  private chunks: Buffer[] = [];
+  private length = 0;
 
   push(chunk: Buffer): void {
-    this.buf = this.buf.length === 0 ? chunk : Buffer.concat([this.buf, chunk]);
+    this.chunks.push(chunk);
+    this.length += chunk.length;
   }
 
   take(bytes: number): Buffer | null {
-    if (this.buf.length < bytes) return null;
-    const out = this.buf.subarray(0, bytes);
-    this.buf = this.buf.subarray(bytes);
-    return out;
+    if (this.length < bytes) return null;
+    return this.consume(bytes);
   }
 
   takeFrame(maxBytes: number = MAX_MESSAGE_BYTES): Buffer | null {
-    if (this.buf.length < 4) return null;
-    const len = this.buf.readUInt32BE(0);
+    if (this.length < 4) return null;
+    const len = this.head(4).readUInt32BE(0);
     if (len > maxBytes) {
       throw new TransferError('frame-too-large', `frame declares ${len} bytes (max ${maxBytes})`);
     }
-    if (this.buf.length < 4 + len) return null;
-    const out = this.buf.subarray(4, 4 + len);
-    this.buf = this.buf.subarray(4 + len);
-    return out;
+    if (this.length < 4 + len) return null;
+    return this.consume(4 + len).subarray(4);
   }
 
   get buffered(): number {
-    return this.buf.length;
+    return this.length;
+  }
+
+  // Joins chunks only once a read can be served, so a frame that arrives in
+  // many socket chunks is copied once instead of once per chunk.
+  private head(bytes: number): Buffer {
+    if (this.chunks[0].length < bytes) {
+      let count = 1;
+      let joined = this.chunks[0].length;
+      while (joined < bytes) joined += this.chunks[count++].length;
+      this.chunks.splice(0, count, Buffer.concat(this.chunks.slice(0, count), joined));
+    }
+    return this.chunks[0];
+  }
+
+  private consume(bytes: number): Buffer {
+    const first = this.head(bytes);
+    if (first.length === bytes) this.chunks.shift();
+    else this.chunks[0] = first.subarray(bytes);
+    this.length -= bytes;
+    return first.subarray(0, bytes);
   }
 }
 
