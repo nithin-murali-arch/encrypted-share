@@ -131,7 +131,11 @@ password cannot cut off a transfer.
 Both sides also close a connection after `idleTimeoutMs` (default 60 s) with
 no activity, through `socket.setTimeout`, and fail with
 `TransferError('timeout', 'no data from the peer for <n> s')`. This also ends
-unauthenticated connections that stall partway through a frame.
+unauthenticated connections that stall partway through a frame. The timer is
+suspended while the receiver hashes from disk, because no bytes flow then:
+around `PartialStore.prepare` and `verifyAndLand` on the server, and while the
+client waits for RESUME and RESULT. A slow hash would otherwise fail the
+sender with `timeout` after the receiver had already landed the files.
 
 ### Unchanged from ES02
 
@@ -210,7 +214,8 @@ Exit codes: 0 ok · 1 usage/config · 2 transfer failed.
   byte-identical; single-file transfer; resume from seeded partial; wrong
   password fails; tampered chunk fails; RESULT mismatch fails; the server
   closes an idle connection; the client fails with `timeout` against a
-  silent server.
+  server that never answers the hello; a transfer succeeds when `prepare` or
+  `verifyAndLand` outlasts `idleTimeoutMs`.
 - `tamper.test.ts`: a TCP man-in-the-middle proxy between a real `sendFiles`
   and a real `startServer`. Names and hashes stay off the wire; tampered
   HEADER, RESUME, and RESULT frames, a forged cleartext RESULT, a dropped or

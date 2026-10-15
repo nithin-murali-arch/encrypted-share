@@ -5,7 +5,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { SocketChannel } from '../src/channel';
 import { clientHandshake } from '../src/client';
-import { randomSalt, randomServerNonce } from '../src/crypto';
+import { randomSalt } from '../src/crypto';
 import { sendFiles } from '../src/index';
 import { encodeHello, FrameType, HELLO_LENGTH, TransferError } from '../src/protocol';
 import { SecureChannel } from '../src/secure-channel';
@@ -244,12 +244,11 @@ describe('e2e', () => {
     expect(readdirSync(out)).toEqual([]);
   });
 
-  test('sendFiles fails with timeout when the server goes silent after the hello', async () => {
+  test('sendFiles fails with timeout when the server never answers the hello', async () => {
     const accepted: Socket[] = [];
     const silent = createServer((socket) => {
       accepted.push(socket);
       socket.on('error', () => {});
-      socket.once('data', () => socket.write(encodeHello(randomServerNonce())));
     });
     await new Promise<void>((resolve) => silent.listen(0, '127.0.0.1', () => resolve()));
     const port = (silent.address() as { port: number }).port;
@@ -267,6 +266,33 @@ describe('e2e', () => {
       await new Promise<void>((resolve) => silent.close(() => resolve()));
     }
   });
+
+  test.each(['prepare', 'verifyAndLand'] as const)(
+    'sendFiles succeeds when %s takes longer than idleTimeoutMs',
+    async (method) => {
+      const original = PartialStore.prototype[method] as (...args: unknown[]) => Promise<unknown>;
+      const slow = jest.spyOn(PartialStore.prototype, method).mockImplementation(async function (
+        this: PartialStore,
+        ...args: unknown[]
+      ) {
+        await sleep(300);
+        return original.apply(this, args);
+      } as never);
+      try {
+        const src = mkdtempSync(join(tmpdir(), 'es-e2e-src-'));
+        const bytes = Buffer.alloc(256 * 1024, 7);
+        writeFileSync(join(src, 'data.bin'), bytes);
+        const out = mkdtempSync(join(tmpdir(), 'es-e2e-out-'));
+        const { port, log } = await withServer(out, { idleTimeoutMs: 50 });
+        const report = await sendFiles({ host: '127.0.0.1', port, password: 'test-password', path: src, idleTimeoutMs: 50 });
+        expect(report).toEqual({ files: ['data.bin'], bytes: bytes.length });
+        expect(readFileSync(join(out, 'data.bin')).equals(bytes)).toBe(true);
+        expect(log).toEqual(['incoming transfer: 1 file(s), 0 dir(s)', 'transfer complete: 1 file(s) verified']);
+      } finally {
+        slow.mockRestore();
+      }
+    },
+  );
 
   test('unreachable target fails fast', async () => {
     const src = makeTree();
