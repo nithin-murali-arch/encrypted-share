@@ -1,0 +1,9 @@
+Run `npm install --no-save --package-lock=false /absolute/path/nithin93-encrypted-share-3.x.y.tgz && DROP_FOLDER=./drop ES_HOST=192.168.1.20 ES_PASSWORD='shared-password' npm start` to send stable files one at a time and archive successful files in `sent/`.
+
+Use Node.js 20 or later. The receiver must run with the same password and without `--overwrite`. Set `ES_PORT` if the receiver does not use 3000. Run `npm run verify` for a three-file localhost check that kills the receiver during the first transfer and restarts it.
+
+Write each file completely before moving it into the drop folder. Use a unique basename for every delivery. The script also waits for two seconds without a size or modification-time change, but a pause in a producer's write does not prove completion. Only regular files directly in the folder qualify. Directories and symlinks are ignored.
+
+Run one watcher per folder and one sender per receiver. The watcher moves stable files into `.sending/`, retries failed connections, and moves acknowledged files into `sent/`. Restarting the watcher recovers `.sending/`. `fs.watch` wakes scans, and periodic scans recover missed events. Keep `.sending/` and `sent/` intact. The library uses a 60-second idle timeout. For a slow receiver disk, raise `idleTimeoutMs` when calling `watchDropFolder` so checksum verification can finish before the sender times out.
+
+A connection can fail after the receiver commits a file but before the sender gets its acknowledgement. The same ambiguity exists if the watcher stops before it archives an acknowledged file. A retry then hits the receiver's existing-file check and the watcher preserves the file in `.sending/` for manual comparison. It does not guarantee exactly-once delivery or notifications. Compare that file with the receiver before moving it to `sent/` yourself. The verification covers interruption before commit and checks one landed filename and one archive per file.

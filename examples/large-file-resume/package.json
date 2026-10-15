@@ -1,0 +1,8 @@
+{
+  "name": "encrypted-share-large-file-resume-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node run.mjs"
+  }
+}
