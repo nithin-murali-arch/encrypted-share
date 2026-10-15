@@ -1,21 +1,19 @@
 import { open } from 'fs/promises';
 import { connect } from 'net';
 import { join } from 'path';
-import { SocketChannel } from './channel';
-import { deriveKey, randomBaseNonce, randomSalt, sealChunk } from './crypto';
+import { DEFAULT_IDLE_TIMEOUT_MS, SocketChannel } from './channel';
+import { deriveKey, deriveSessionKeys, randomSalt } from './crypto';
 import { buildManifest, WarnFn } from './manifest';
 import {
-  decodeMessage,
+  decodeHello,
   DEFAULT_CHUNK_SIZE,
-  deriveNonce,
-  encodeChunk,
-  encodeHeader,
+  encodeHello,
+  FrameType,
+  HELLO_LENGTH,
   MAX_CHUNK_BYTES,
-  ResumeMessage,
-  ResultMessage,
   TransferError,
-  TransferHeader,
 } from './protocol';
+import { SecureChannel } from './secure-channel';
 
 export interface SendOptions {
   host: string;
@@ -23,6 +21,7 @@ export interface SendOptions {
   password: string | Buffer;
   path: string;
   chunkSize?: number;
+  idleTimeoutMs?: number;
   onProgress?: (sentBytes: number, totalBytes: number) => void;
   onWarn?: WarnFn;
 }
@@ -32,15 +31,39 @@ export interface SendReport {
   bytes: number;
 }
 
+async function whenConnectionLost<T>(pending: Promise<T>, code: string, message: string): Promise<T> {
+  try {
+    return await pending;
+  } catch (err) {
+    if (err instanceof TransferError && (err.code === 'truncated' || err.code === 'transfer-failed')) {
+      throw new TransferError(code, message);
+    }
+    throw err;
+  }
+}
+
+export async function clientHandshake(
+  ch: SocketChannel,
+  password: string | Buffer,
+): Promise<SecureChannel> {
+  const clientSalt = randomSalt();
+  const ikm = deriveKey(password, clientSalt);
+  await ch.write(encodeHello(clientSalt));
+  const hello = await whenConnectionLost(
+    ch.readExact(HELLO_LENGTH),
+    'handshake-failed',
+    'server closed the connection during the handshake; it may run encrypted-share 2.x or an incompatible version',
+  );
+  const serverNonce = decodeHello(hello);
+  return new SecureChannel(ch, deriveSessionKeys(ikm, clientSalt, serverNonce), 'client');
+}
+
 export async function sendFiles(opts: SendOptions): Promise<SendReport> {
   const chunkSize = opts.chunkSize ?? DEFAULT_CHUNK_SIZE;
   if (!Number.isInteger(chunkSize) || chunkSize <= 0 || chunkSize > MAX_CHUNK_BYTES) {
     throw new TransferError('bad-config', `invalid chunk size: ${chunkSize}`);
   }
   const manifest = await buildManifest(opts.path, opts.onWarn);
-  const salt = randomSalt();
-  const baseNonce = randomBaseNonce();
-  const key = deriveKey(opts.password, salt);
 
   const socket = connect(opts.port, opts.host);
   await new Promise<void>((resolve, reject) => {
@@ -56,22 +79,19 @@ export async function sendFiles(opts: SendOptions): Promise<SendReport> {
     socket.once('error', onError);
   });
 
-  const ch = new SocketChannel(socket);
+  const ch = new SocketChannel(socket, opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS);
   try {
-    const header: TransferHeader = {
-      salt: salt.toString('base64'),
-      baseNonce: baseNonce.toString('base64'),
-      chunkSize,
-      files: manifest.files,
-      dirs: manifest.dirs,
-    };
-    await ch.write(encodeHeader(header));
-    const resume = decodeMessage<ResumeMessage>(await ch.readFrame());
+    const sc = await clientHandshake(ch, opts.password);
+    await sc.send(FrameType.HEADER, { chunkSize, files: manifest.files, dirs: manifest.dirs });
+    const { body: resume } = await whenConnectionLost(
+      sc.recv([FrameType.RESUME]),
+      'rejected',
+      'server closed the connection after the header; check that both sides use the same password',
+    );
     if (resume.error) {
       throw new TransferError('rejected', `server rejected transfer: ${resume.error}`);
     }
 
-    let counter = 0n;
     let sent = 0;
     opts.onProgress?.(0, manifest.totalBytes);
     for (let i = 0; i < manifest.files.length; i++) {
@@ -89,10 +109,11 @@ export async function sendFiles(opts: SendOptions): Promise<SendReport> {
         for (;;) {
           const { bytesRead } = await fh.read(buf, 0, chunkSize, offset);
           if (bytesRead === 0) break;
-          const plaintext = buf.subarray(0, bytesRead);
-          const { ciphertext, tag } = sealChunk(key, deriveNonce(baseNonce, counter), plaintext);
-          counter += 1n;
-          await ch.write(encodeChunk(i, BigInt(offset), ciphertext, tag));
+          await sc.send(FrameType.CHUNK, {
+            fileIndex: i,
+            offset: BigInt(offset),
+            data: buf.subarray(0, bytesRead),
+          });
           offset += bytesRead;
           sent += bytesRead;
           opts.onProgress?.(sent, manifest.totalBytes);
@@ -102,8 +123,8 @@ export async function sendFiles(opts: SendOptions): Promise<SendReport> {
       }
     }
 
-    await ch.write(Buffer.alloc(4));
-    const result = decodeMessage<ResultMessage>(await ch.readFrame());
+    await sc.send(FrameType.DONE, null);
+    const { body: result } = await sc.recv([FrameType.RESULT]);
     if (!result.ok) {
       const reasons = result.failed.map((f) => `${f.path}: ${f.reason}`).join('; ');
       throw new TransferError('verify-failed', `server could not verify transfer: ${reasons}`);

@@ -1,120 +1,138 @@
 import {
+  decodeFrame,
+  decodeHello,
+  encodeFrame,
+  encodeHello,
+  encodeLegacyRejection,
   FrameReader,
-  TransferError,
-  VERSION,
-  decodeChunk,
-  decodeHeader,
-  decodeMessage,
-  deriveNonce,
-  encodeChunk,
-  encodeHeader,
-  encodeMessage,
-  readHeaderLength,
+  FrameType,
+  parseHelloPrefix,
   sanitizePath,
+  TransferError,
   TransferHeader,
 } from '../src/protocol';
 
 function sampleHeader(): TransferHeader {
   return {
-    salt: Buffer.alloc(16, 1).toString('base64'),
-    baseNonce: Buffer.alloc(4, 2).toString('base64'),
     chunkSize: 65536,
     files: [{ path: 'a.txt', size: 3, sha256: 'abc' }],
     dirs: ['sub'],
   };
 }
 
-describe('header codec', () => {
-  test('round-trip', () => {
-    const h = sampleHeader();
-    expect(decodeHeader(encodeHeader(h))).toEqual(h);
+function codeOf(fn: () => unknown): string {
+  try {
+    fn();
+  } catch (err) {
+    expect(err).toBeInstanceOf(TransferError);
+    return (err as TransferError).code;
+  }
+  throw new Error('expected a TransferError');
+}
+
+function headerFrame(obj: unknown): Buffer {
+  return Buffer.concat([Buffer.from([FrameType.HEADER]), Buffer.from(JSON.stringify(obj))]);
+}
+
+describe('hello codec', () => {
+  test('encodes magic, version and the 16 random bytes', () => {
+    const random = Buffer.alloc(16, 0xab);
+    const hello = encodeHello(random);
+    expect(hello.toString('hex')).toBe('45533033' + '0003' + 'ab'.repeat(16));
+    expect(decodeHello(hello).equals(random)).toBe(true);
   });
 
-  test('rejects bad magic', () => {
-    const buf = encodeHeader(sampleHeader());
-    buf.write('XXXX', 0);
-    expect(() => decodeHeader(buf)).toThrow(TransferError);
+  test('classifies the ES02 magic as legacy', () => {
+    expect(parseHelloPrefix(Buffer.from('4553303200020000', 'hex'))).toBe('legacy');
+    expect(parseHelloPrefix(Buffer.from('455330330003', 'hex'))).toBe('current');
   });
 
-  test('rejects bad version', () => {
-    const buf = encodeHeader(sampleHeader());
-    buf.writeUInt16BE(VERSION + 1, 4);
-    expect(() => decodeHeader(buf)).toThrow(/version/);
+  test('rejects unknown magic and unsupported version', () => {
+    expect(() => parseHelloPrefix(Buffer.from('HTTP/1', 'latin1'))).toThrow(
+      'unknown protocol magic "HTTP"',
+    );
+    expect(() => parseHelloPrefix(Buffer.from('455330330004', 'hex'))).toThrow(
+      'unsupported ES03 version 4',
+    );
+    expect(codeOf(() => decodeHello(Buffer.concat([Buffer.from('ES02'), Buffer.alloc(18)])))).toBe(
+      'bad-hello',
+    );
+  });
+});
+
+describe('frame codec', () => {
+  test('HEADER round-trip', () => {
+    const plaintext = encodeFrame(FrameType.HEADER, sampleHeader());
+    expect(plaintext[0]).toBe(1);
+    expect(decodeFrame(plaintext, [FrameType.HEADER])).toEqual({
+      type: FrameType.HEADER,
+      body: sampleHeader(),
+    });
   });
 
-  test('rejects length mismatch and truncation', () => {
-    const buf = encodeHeader(sampleHeader());
-    buf.writeUInt32BE(buf.length, 6);
-    expect(() => decodeHeader(buf)).toThrow(/mismatch/);
-    expect(() => decodeHeader(buf.subarray(0, 5))).toThrow(/too short/);
+  test('CHUNK carries fileIndex and offset in the plaintext', () => {
+    const plaintext = encodeFrame(FrameType.CHUNK, {
+      fileIndex: 3,
+      offset: 123456789n,
+      data: Buffer.from('xyz'),
+    });
+    expect(plaintext.toString('hex')).toBe('03' + '00000003' + '00000000075bcd15' + '78797a');
+    expect(decodeFrame(plaintext, [FrameType.CHUNK, FrameType.DONE])).toEqual({
+      type: FrameType.CHUNK,
+      body: { fileIndex: 3, offset: 123456789n, data: Buffer.from('xyz') },
+    });
   });
 
-  test('rejects non-JSON and malformed shapes', () => {
-    const raw = Buffer.from('not json');
-    const buf = Buffer.alloc(10 + raw.length);
-    buf.write('ES02', 0);
-    buf.writeUInt16BE(VERSION, 4);
-    buf.writeUInt32BE(raw.length, 6);
-    raw.copy(buf, 10);
-    expect(() => decodeHeader(buf)).toThrow(/JSON/);
+  test('DONE is a bare type byte', () => {
+    expect(encodeFrame(FrameType.DONE, null)).toEqual(Buffer.from([4]));
+    expect(decodeFrame(Buffer.from([4]), [FrameType.CHUNK, FrameType.DONE])).toEqual({
+      type: FrameType.DONE,
+      body: null,
+    });
+    expect(codeOf(() => decodeFrame(Buffer.from([4, 0]), [FrameType.DONE]))).toBe('bad-frame');
+  });
+
+  test('RESUME and RESULT round-trip as JSON', () => {
+    const resume = { received: { 'a.txt': 2 } };
+    expect(decodeFrame(encodeFrame(FrameType.RESUME, resume), [FrameType.RESUME]).body).toEqual(resume);
+    const result = { ok: false, verified: ['a'], failed: [{ path: 'b', reason: 'checksum mismatch' }] };
+    expect(decodeFrame(encodeFrame(FrameType.RESULT, result), [FrameType.RESULT]).body).toEqual(result);
+  });
+
+  test('rejects a frame type the sequence does not expect', () => {
+    const result = encodeFrame(FrameType.RESULT, { ok: true, verified: [], failed: [] });
+    expect(() => decodeFrame(result, [FrameType.HEADER])).toThrow('expected HEADER, got RESULT');
+    expect(() => decodeFrame(Buffer.from([99]), [FrameType.CHUNK, FrameType.DONE])).toThrow(
+      'expected CHUNK or DONE, got type 99',
+    );
+    expect(codeOf(() => decodeFrame(Buffer.alloc(0), [FrameType.HEADER]))).toBe('bad-frame');
+  });
+
+  test('rejects a short CHUNK body', () => {
+    expect(() => decodeFrame(Buffer.from([3, 0, 0, 0]), [FrameType.CHUNK])).toThrow(/too short/);
+  });
+
+  test('rejects non-JSON and malformed headers', () => {
+    const notJson = Buffer.concat([Buffer.from([FrameType.HEADER]), Buffer.from('not json')]);
+    expect(() => decodeFrame(notJson, [FrameType.HEADER])).toThrow(/JSON/);
     const badShapes = [
+      null,
       { ...sampleHeader(), files: 'nope' },
       { ...sampleHeader(), dirs: {} },
       { ...sampleHeader(), chunkSize: 0 },
       { ...sampleHeader(), files: [{ path: 'x' }] },
     ];
     for (const s of badShapes) {
-      const json = Buffer.from(JSON.stringify(s));
-      const b = Buffer.alloc(10 + json.length);
-      b.write('ES02', 0);
-      b.writeUInt16BE(VERSION, 4);
-      b.writeUInt32BE(json.length, 6);
-      json.copy(b, 10);
-      expect(() => decodeHeader(b)).toThrow(TransferError);
+      expect(codeOf(() => decodeFrame(headerFrame(s), [FrameType.HEADER]))).toBe('bad-header');
     }
   });
-
-  test('readHeaderLength extracts declared length', () => {
-    const buf = encodeHeader(sampleHeader());
-    expect(readHeaderLength(buf.subarray(0, 10))).toBe(buf.length - 10);
-    expect(() => readHeaderLength(buf.subarray(0, 9))).toThrow(TransferError);
-  });
 });
 
-describe('message codec', () => {
-  test('round-trip', () => {
-    const msg = { ok: true, verified: ['a'], failed: [] };
-    const framed = encodeMessage(msg);
-    expect(framed.readUInt32BE(0)).toBe(framed.length - 4);
-    expect(decodeMessage(framed.subarray(4))).toEqual(msg);
-  });
-
-  test('rejects bad JSON', () => {
-    expect(() => decodeMessage(Buffer.from('{{{'))).toThrow(/JSON/);
-  });
-});
-
-describe('chunk codec', () => {
-  test('round-trip', () => {
-    const ct = Buffer.from('ciphertext-bytes');
-    const tag = Buffer.alloc(16, 7);
-    const frame = encodeChunk(3, 123456789n, ct, tag);
+describe('legacy rejection', () => {
+  test('is an ES02 RESUME frame with an error', () => {
+    const frame = encodeLegacyRejection('upgrade');
     expect(frame.readUInt32BE(0)).toBe(frame.length - 4);
-    const { header, ciphertext, tag: tagOut } = decodeChunk(frame.subarray(4));
-    expect(header).toEqual({ fileIndex: 3, offset: 123456789n, dataLength: ct.length });
-    expect(ciphertext.equals(ct)).toBe(true);
-    expect(tagOut.equals(tag)).toBe(true);
-  });
-
-  test('rejects short frames, length mismatch, bad tag', () => {
-    expect(() => decodeChunk(Buffer.alloc(10))).toThrow(/too short/);
-    const ct = Buffer.from('x');
-    const frame = encodeChunk(0, 0n, ct, Buffer.alloc(16));
-    const payload = Buffer.from(frame.subarray(4));
-    payload.writeUInt32BE(999, 12);
-    expect(() => decodeChunk(payload)).toThrow(/mismatch/);
-    expect(() => encodeChunk(-1, 0n, ct, Buffer.alloc(16))).toThrow(TransferError);
-    expect(() => encodeChunk(0, 0n, ct, Buffer.alloc(8))).toThrow(/tag/);
+    expect(JSON.parse(frame.subarray(4).toString('utf8'))).toEqual({ received: {}, error: 'upgrade' });
   });
 });
 
@@ -130,18 +148,15 @@ describe('FrameReader', () => {
     expect(r.buffered).toBe(2);
   });
 
-  test('takeFrame waits for full frame and handles DONE marker', () => {
+  test('takeFrame waits for the full frame', () => {
     const r = new FrameReader();
-    const frame = encodeMessage({ hello: 'world' });
+    const frame = Buffer.from('00000003616263' + '00000000', 'hex');
     r.push(frame.subarray(0, 5));
     expect(r.takeFrame()).toBeNull();
     r.push(frame.subarray(5));
-    expect(decodeMessage(r.takeFrame()!)).toEqual({ hello: 'world' });
+    expect(r.takeFrame()).toEqual(Buffer.from('abc'));
+    expect(r.takeFrame()).toEqual(Buffer.alloc(0));
     expect(r.takeFrame()).toBeNull();
-    r.push(Buffer.alloc(4));
-    const done = r.takeFrame();
-    expect(done).not.toBeNull();
-    expect(done!.length).toBe(0);
   });
 
   test('rejects oversized frames', () => {
@@ -149,30 +164,7 @@ describe('FrameReader', () => {
     const len = Buffer.alloc(4);
     len.writeUInt32BE(1024, 0);
     r.push(len);
-    try {
-      r.takeFrame(16);
-      throw new Error('should have thrown');
-    } catch (err) {
-      expect(err).toBeInstanceOf(TransferError);
-      expect((err as TransferError).code).toBe('frame-too-large');
-    }
-  });
-});
-
-describe('deriveNonce', () => {
-  test('builds 12-byte nonce with counter suffix', () => {
-    const base = Buffer.from([1, 2, 3, 4]);
-    const n0 = deriveNonce(base, 0n);
-    const n1 = deriveNonce(base, 1n);
-    expect(n0.length).toBe(12);
-    expect(n0.subarray(0, 4).equals(base)).toBe(true);
-    expect(n0.readBigUInt64BE(4)).toBe(0n);
-    expect(n1.readBigUInt64BE(4)).toBe(1n);
-    expect(n0.equals(n1)).toBe(false);
-  });
-
-  test('rejects bad base length', () => {
-    expect(() => deriveNonce(Buffer.alloc(12), 0n)).toThrow(/base nonce/);
+    expect(codeOf(() => r.takeFrame(16))).toBe('frame-too-large');
   });
 });
 

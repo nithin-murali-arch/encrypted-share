@@ -1,21 +1,14 @@
 import { createHash } from 'crypto';
-import { mkdtempSync, mkdirSync, readFileSync, existsSync, writeFileSync } from 'fs';
-import { connect } from 'net';
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, existsSync, writeFileSync } from 'fs';
+import { connect, createServer, Socket } from 'net';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { SocketChannel } from '../src/channel';
+import { clientHandshake } from '../src/client';
+import { randomSalt, randomServerNonce } from '../src/crypto';
 import { sendFiles } from '../src/index';
-import { deriveKey, sealChunk } from '../src/crypto';
-import {
-  decodeMessage,
-  deriveNonce,
-  encodeChunk,
-  encodeHeader,
-  ResumeMessage,
-  ResultMessage,
-  TransferError,
-  TransferHeader,
-} from '../src/protocol';
+import { encodeHello, FrameType, HELLO_LENGTH, TransferError } from '../src/protocol';
+import { SecureChannel } from '../src/secure-channel';
 import { startServer, ServerHandle } from '../src/index';
 import { PartialStore } from '../src/store';
 
@@ -34,7 +27,7 @@ afterEach(async () => {
 
 async function withServer(
   outDir: string,
-  opts: { password?: string; overwrite?: boolean } = {},
+  opts: { password?: string; overwrite?: boolean; idleTimeoutMs?: number } = {},
 ): Promise<{ port: number; log: string[] }> {
   const log: string[] = [];
   const handle = await startServer({
@@ -42,10 +35,29 @@ async function withServer(
     password: opts.password ?? 'test-password',
     outDir,
     overwrite: opts.overwrite,
+    idleTimeoutMs: opts.idleTimeoutMs,
     onTransfer: (m) => log.push(m),
   });
   servers.push(handle);
   return { port: handle.port, log };
+}
+
+async function openSession(port: number, password = 'test-password'): Promise<{ ch: SocketChannel; sc: SecureChannel }> {
+  const socket = connect(port, '127.0.0.1');
+  await new Promise<void>((resolve) => socket.once('connect', () => resolve()));
+  const ch = new SocketChannel(socket);
+  return { ch, sc: await clientHandshake(ch, password) };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms).unref());
+}
+
+function closedWithin(socket: Socket, ms: number): Promise<boolean> {
+  return Promise.race([
+    new Promise<boolean>((resolve) => socket.once('close', () => resolve(true))),
+    sleep(ms).then(() => false),
+  ]);
 }
 
 function makeTree(): string {
@@ -129,67 +141,59 @@ describe('e2e', () => {
     const { port, log } = await withServer(out, { password: 'correct' });
     await expect(
       sendFiles({ host: '127.0.0.1', port, password: 'wrong', path: src }),
-    ).rejects.toThrow(TransferError);
-    expect(existsSync(join(out, 'a.txt'))).toBe(false);
-    expect(log.join('\n')).toMatch(/transfer failed/);
+    ).rejects.toThrow(
+      expect.objectContaining({
+        code: 'rejected',
+        message:
+          'server closed the connection after the header; check that both sides use the same password',
+      }),
+    );
+    expect(readdirSync(out)).toEqual([]);
+    expect(log).toEqual([
+      'transfer failed: frame authentication failed: wrong password, or the frame was altered, dropped, reordered or replayed',
+    ]);
   });
 
   test('tampered chunk destroys the transfer without landing', async () => {
     const out = mkdtempSync(join(tmpdir(), 'es-e2e-out-'));
     const { port, log } = await withServer(out);
-    const socket = connect(port, '127.0.0.1');
-    await new Promise<void>((resolve) => socket.once('connect', () => resolve()));
-    const ch = new SocketChannel(socket);
+    const { ch, sc } = await openSession(port);
     try {
-      const salt = Buffer.alloc(16, 9);
-      const base = Buffer.alloc(4, 3);
-      const key = deriveKey('test-password', salt);
-      const header: TransferHeader = {
-        salt: salt.toString('base64'),
-        baseNonce: base.toString('base64'),
+      await sc.send(FrameType.HEADER, {
         chunkSize: 64,
         files: [{ path: 'evil.txt', size: 5, sha256: sha('HELLO') }],
         dirs: [],
-      };
-      await ch.write(encodeHeader(header));
-      const resume = decodeMessage<ResumeMessage>(await ch.readFrame());
-      expect(resume.error).toBeUndefined();
-      const sealed = sealChunk(key, deriveNonce(base, 0n), Buffer.from('HELLO'));
-      sealed.ciphertext[0] ^= 0xff;
-      await ch.write(encodeChunk(0, 0n, sealed.ciphertext, sealed.tag));
+      });
+      expect((await sc.recv([FrameType.RESUME])).body).toEqual({ received: { 'evil.txt': 0 } });
+      const forged = Buffer.alloc(4 + 34, 0x5a);
+      forged.writeUInt32BE(34, 0);
+      await ch.write(forged);
       await expect(ch.readFrame()).rejects.toThrow(TransferError);
     } finally {
       ch.destroy();
     }
-    expect(existsSync(join(out, 'evil.txt'))).toBe(false);
-    expect(log.join('\n')).toMatch(/transfer failed/);
+    expect(readdirSync(out)).toEqual(['.es-partial']);
+    expect(log[log.length - 1]).toMatch(/^transfer failed: frame authentication failed/);
   });
 
   test('checksum mismatch yields a failed RESULT, not a crash', async () => {
     const out = mkdtempSync(join(tmpdir(), 'es-e2e-out-'));
     const { port, log } = await withServer(out);
-    const socket = connect(port, '127.0.0.1');
-    await new Promise<void>((resolve) => socket.once('connect', () => resolve()));
-    const ch = new SocketChannel(socket);
+    const { ch, sc } = await openSession(port);
     try {
-      const salt = Buffer.alloc(16, 9);
-      const base = Buffer.alloc(4, 3);
-      const key = deriveKey('test-password', salt);
-      const header: TransferHeader = {
-        salt: salt.toString('base64'),
-        baseNonce: base.toString('base64'),
+      await sc.send(FrameType.HEADER, {
         chunkSize: 64,
         files: [{ path: 'bad.txt', size: 5, sha256: sha('RIGHT') }],
         dirs: [],
-      };
-      await ch.write(encodeHeader(header));
-      await ch.readFrame();
-      const sealed = sealChunk(key, deriveNonce(base, 0n), Buffer.from('WRONG'));
-      await ch.write(encodeChunk(0, 0n, sealed.ciphertext, sealed.tag));
-      await ch.write(Buffer.alloc(4));
-      const result = decodeMessage<ResultMessage>(await ch.readFrame());
-      expect(result.ok).toBe(false);
-      expect(result.failed).toEqual([{ path: 'bad.txt', reason: 'checksum mismatch' }]);
+      });
+      await sc.recv([FrameType.RESUME]);
+      await sc.send(FrameType.CHUNK, { fileIndex: 0, offset: 0n, data: Buffer.from('WRONG') });
+      await sc.send(FrameType.DONE, null);
+      expect((await sc.recv([FrameType.RESULT])).body).toEqual({
+        ok: false,
+        verified: [],
+        failed: [{ path: 'bad.txt', reason: 'checksum mismatch' }],
+      });
     } finally {
       ch.destroy();
     }
@@ -200,20 +204,17 @@ describe('e2e', () => {
   test('evil manifest paths are rejected with an error message', async () => {
     const out = mkdtempSync(join(tmpdir(), 'es-e2e-out-'));
     const { port } = await withServer(out);
-    const socket = connect(port, '127.0.0.1');
-    await new Promise<void>((resolve) => socket.once('connect', () => resolve()));
-    const ch = new SocketChannel(socket);
+    const { ch, sc } = await openSession(port);
     try {
-      const header: TransferHeader = {
-        salt: Buffer.alloc(16, 9).toString('base64'),
-        baseNonce: Buffer.alloc(4, 3).toString('base64'),
+      await sc.send(FrameType.HEADER, {
         chunkSize: 64,
         files: [{ path: '../evil.txt', size: 1, sha256: sha('x') }],
         dirs: [],
-      };
-      await ch.write(encodeHeader(header));
-      const resume = decodeMessage<ResumeMessage>(await ch.readFrame());
-      expect(resume.error).toMatch(/unsafe path/);
+      });
+      expect((await sc.recv([FrameType.RESUME])).body).toEqual({
+        received: {},
+        error: 'unsafe path: "../evil.txt"',
+      });
     } finally {
       ch.destroy();
     }
@@ -223,6 +224,48 @@ describe('e2e', () => {
     const out = mkdtempSync(join(tmpdir(), 'es-e2e-out-'));
     const { port } = await withServer(out);
     await expect(startServer({ port, password: 'x', outDir: out })).rejects.toThrow();
+  });
+
+  test('server closes a connection that goes idle after the hello', async () => {
+    const out = mkdtempSync(join(tmpdir(), 'es-e2e-out-'));
+    const { port, log } = await withServer(out, { idleTimeoutMs: 200 });
+    const socket = connect(port, '127.0.0.1');
+    socket.on('error', () => {});
+    const received: Buffer[] = [];
+    socket.on('data', (chunk: Buffer) => received.push(chunk));
+    socket.write(encodeHello(randomSalt()));
+    try {
+      expect(await closedWithin(socket, 2000)).toBe(true);
+    } finally {
+      socket.destroy();
+    }
+    expect(Buffer.concat(received).length).toBe(HELLO_LENGTH);
+    expect(log).toEqual(['transfer failed: no data from the peer for 0.2 s']);
+    expect(readdirSync(out)).toEqual([]);
+  });
+
+  test('sendFiles fails with timeout when the server goes silent after the hello', async () => {
+    const accepted: Socket[] = [];
+    const silent = createServer((socket) => {
+      accepted.push(socket);
+      socket.on('error', () => {});
+      socket.once('data', () => socket.write(encodeHello(randomServerNonce())));
+    });
+    await new Promise<void>((resolve) => silent.listen(0, '127.0.0.1', () => resolve()));
+    const port = (silent.address() as { port: number }).port;
+    try {
+      const outcome = await Promise.race([
+        sendFiles({ host: '127.0.0.1', port, password: 'x', path: makeTree(), idleTimeoutMs: 200 }).then(
+          () => 'resolved',
+          (err: TransferError) => `${err.code}: ${err.message}`,
+        ),
+        sleep(3000).then(() => 'still waiting after 3 s'),
+      ]);
+      expect(outcome).toBe('timeout: no data from the peer for 0.2 s');
+    } finally {
+      for (const s of accepted) s.destroy();
+      await new Promise<void>((resolve) => silent.close(() => resolve()));
+    }
   });
 
   test('unreachable target fails fast', async () => {

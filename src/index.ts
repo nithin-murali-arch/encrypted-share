@@ -10,10 +10,4 @@ export { loadConfig, DEFAULT_CONFIG_PATH } from './config';
 export type { EsConfig } from './config';
 export { deriveKey, sealChunk, openChunk, sha256File } from './crypto';
 export { VERSION, TransferError } from './protocol';
-export type {
-  FileEntry,
-  TransferHeader,
-  ResumeMessage,
-  ResultMessage,
-  ChunkHeader,
-} from './protocol';
+export type { FileEntry, TransferHeader, ResumeMessage, ResultMessage } from './protocol';

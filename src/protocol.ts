@@ -1,14 +1,23 @@
-export const MAGIC = Buffer.from('ES02', 'ascii');
-export const VERSION = 2;
-export const HEADER_PREFIX_LENGTH = 10;
-export const IV_BASE_LENGTH = 4;
+export const MAGIC = Buffer.from('ES03', 'ascii');
+export const LEGACY_MAGIC = Buffer.from('ES02', 'ascii');
+export const VERSION = 3;
+export const HELLO_PREFIX_LENGTH = 6;
+export const SALT_LENGTH = 16;
+export const SERVER_NONCE_LENGTH = 16;
+export const HELLO_LENGTH = HELLO_PREFIX_LENGTH + SALT_LENGTH;
 export const NONCE_LENGTH = 12;
 export const TAG_LENGTH = 16;
-export const SALT_LENGTH = 16;
 export const KEY_LENGTH = 32;
 export const DEFAULT_CHUNK_SIZE = 64 * 1024;
 export const MAX_MESSAGE_BYTES = 4 * 1024 * 1024;
 export const MAX_CHUNK_BYTES = 4 * 1024 * 1024;
+
+const CHUNK_BODY_PREFIX_LENGTH = 4 + 8;
+export const CHUNK_FRAME_OVERHEAD = 1 + CHUNK_BODY_PREFIX_LENGTH + TAG_LENGTH;
+
+export const FRAME_AAD = Buffer.alloc(HELLO_PREFIX_LENGTH);
+MAGIC.copy(FRAME_AAD, 0);
+FRAME_AAD.writeUInt16BE(VERSION, 4);
 
 export interface FileEntry {
   path: string;
@@ -17,8 +26,6 @@ export interface FileEntry {
 }
 
 export interface TransferHeader {
-  salt: string;
-  baseNonce: string;
   chunkSize: number;
   files: FileEntry[];
   dirs: string[];
@@ -40,11 +47,31 @@ export interface ResultMessage {
   failed: FailedFile[];
 }
 
-export interface ChunkHeader {
+export interface ChunkBody {
   fileIndex: number;
   offset: bigint;
-  dataLength: number;
+  data: Buffer;
 }
+
+export enum FrameType {
+  HEADER = 1,
+  RESUME = 2,
+  CHUNK = 3,
+  DONE = 4,
+  RESULT = 5,
+}
+
+export interface FrameBodies {
+  [FrameType.HEADER]: TransferHeader;
+  [FrameType.RESUME]: ResumeMessage;
+  [FrameType.CHUNK]: ChunkBody;
+  [FrameType.DONE]: null;
+  [FrameType.RESULT]: ResultMessage;
+}
+
+export type Frame<T extends FrameType = FrameType> = {
+  [K in T]: { type: K; body: FrameBodies[K] };
+}[T];
 
 export class TransferError extends Error {
   readonly code: string;
@@ -86,14 +113,56 @@ export class FrameReader {
   }
 }
 
+export type HelloKind = 'current' | 'legacy';
+
+export function parseHelloPrefix(prefix: Buffer): HelloKind {
+  const magic = prefix.subarray(0, 4);
+  if (magic.equals(LEGACY_MAGIC)) return 'legacy';
+  if (!magic.equals(MAGIC)) {
+    throw new TransferError('bad-hello', `unknown protocol magic ${JSON.stringify(magic.toString('latin1'))}`);
+  }
+  const version = prefix.readUInt16BE(4);
+  if (version !== VERSION) {
+    throw new TransferError('bad-hello', `unsupported ES03 version ${version}`);
+  }
+  return 'current';
+}
+
+export function encodeHello(random: Buffer): Buffer {
+  const out = Buffer.alloc(HELLO_LENGTH);
+  FRAME_AAD.copy(out, 0);
+  random.copy(out, HELLO_PREFIX_LENGTH);
+  return out;
+}
+
+export function decodeHello(hello: Buffer): Buffer {
+  if (parseHelloPrefix(hello) !== 'current') {
+    throw new TransferError('bad-hello', 'peer speaks the ES02 protocol');
+  }
+  return hello.subarray(HELLO_PREFIX_LENGTH, HELLO_LENGTH);
+}
+
+export function encodeLegacyRejection(error: string): Buffer {
+  const json = Buffer.from(JSON.stringify({ received: {}, error } satisfies ResumeMessage), 'utf8');
+  const out = Buffer.alloc(4 + json.length);
+  out.writeUInt32BE(json.length, 0);
+  json.copy(out, 4);
+  return out;
+}
+
+function parseJson(buf: Buffer): unknown {
+  try {
+    return JSON.parse(buf.toString('utf8'));
+  } catch {
+    throw new TransferError('bad-message', 'message is not valid JSON');
+  }
+}
+
 function assertHeaderShape(obj: unknown): TransferHeader {
   if (typeof obj !== 'object' || obj === null) {
     throw new TransferError('bad-header', 'header is not an object');
   }
   const h = obj as Record<string, unknown>;
-  if (typeof h['salt'] !== 'string' || typeof h['baseNonce'] !== 'string') {
-    throw new TransferError('bad-header', 'header salt/baseNonce must be strings');
-  }
   if (!Number.isInteger(h['chunkSize']) || (h['chunkSize'] as number) <= 0) {
     throw new TransferError('bad-header', 'header chunkSize must be a positive integer');
   }
@@ -114,125 +183,73 @@ function assertHeaderShape(obj: unknown): TransferHeader {
   return obj as TransferHeader;
 }
 
-export function encodeHeader(header: TransferHeader): Buffer {
-  const json = Buffer.from(JSON.stringify(header), 'utf8');
-  const out = Buffer.alloc(HEADER_PREFIX_LENGTH + json.length);
-  MAGIC.copy(out, 0);
-  out.writeUInt16BE(VERSION, 4);
-  out.writeUInt32BE(json.length, 6);
-  json.copy(out, HEADER_PREFIX_LENGTH);
-  return out;
+interface BodyCodec<T> {
+  encode(body: T): Buffer;
+  decode(buf: Buffer): T;
 }
 
-export function decodeHeader(buf: Buffer): TransferHeader {
-  if (buf.length < HEADER_PREFIX_LENGTH) {
-    throw new TransferError('bad-header', 'header too short');
-  }
-  if (!buf.subarray(0, 4).equals(MAGIC)) {
-    throw new TransferError('bad-header', 'bad magic');
-  }
-  const version = buf.readUInt16BE(4);
-  if (version !== VERSION) {
-    throw new TransferError('bad-header', `unsupported version ${version}`);
-  }
-  const len = buf.readUInt32BE(6);
-  if (len > MAX_MESSAGE_BYTES) {
-    throw new TransferError('bad-header', `header length ${len} exceeds max`);
-  }
-  if (buf.length !== HEADER_PREFIX_LENGTH + len) {
-    throw new TransferError('bad-header', 'header length mismatch');
-  }
-  let obj: unknown;
-  try {
-    obj = JSON.parse(buf.subarray(HEADER_PREFIX_LENGTH).toString('utf8'));
-  } catch {
-    throw new TransferError('bad-header', 'header is not valid JSON');
-  }
-  return assertHeaderShape(obj);
-}
-
-export function readHeaderLength(prefix: Buffer): number {
-  if (prefix.length < HEADER_PREFIX_LENGTH) {
-    throw new TransferError('bad-header', 'header prefix too short');
-  }
-  if (!prefix.subarray(0, 4).equals(MAGIC)) {
-    throw new TransferError('bad-header', 'bad magic');
-  }
-  const len = prefix.readUInt32BE(6);
-  if (len > MAX_MESSAGE_BYTES) {
-    throw new TransferError('bad-header', `header length ${len} exceeds max`);
-  }
-  return len;
-}
-
-export function encodeMessage(obj: unknown): Buffer {
-  const json = Buffer.from(JSON.stringify(obj), 'utf8');
-  const out = Buffer.alloc(4 + json.length);
-  out.writeUInt32BE(json.length, 0);
-  json.copy(out, 4);
-  return out;
-}
-
-export function decodeMessage<T>(buf: Buffer): T {
-  try {
-    return JSON.parse(buf.toString('utf8')) as T;
-  } catch {
-    throw new TransferError('bad-message', 'message is not valid JSON');
-  }
-}
-
-export function encodeChunk(
-  fileIndex: number,
-  offset: bigint,
-  ciphertext: Buffer,
-  tag: Buffer,
-): Buffer {
-  if (!Number.isInteger(fileIndex) || fileIndex < 0) {
-    throw new TransferError('bad-chunk', 'fileIndex must be a non-negative integer');
-  }
-  if (tag.length !== TAG_LENGTH) {
-    throw new TransferError('bad-chunk', 'tag must be 16 bytes');
-  }
-  const payloadLen = 4 + 8 + 4 + ciphertext.length + TAG_LENGTH;
-  const out = Buffer.alloc(4 + payloadLen);
-  out.writeUInt32BE(payloadLen, 0);
-  out.writeUInt32BE(fileIndex, 4);
-  out.writeBigUInt64BE(offset, 8);
-  out.writeUInt32BE(ciphertext.length, 16);
-  ciphertext.copy(out, 20);
-  tag.copy(out, 20 + ciphertext.length);
-  return out;
-}
-
-export function decodeChunk(frame: Buffer): {
-  header: ChunkHeader;
-  ciphertext: Buffer;
-  tag: Buffer;
-} {
-  if (frame.length < 32) {
-    throw new TransferError('bad-chunk', 'chunk frame too short');
-  }
-  const fileIndex = frame.readUInt32BE(0);
-  const offset = frame.readBigUInt64BE(4);
-  const dataLength = frame.readUInt32BE(12);
-  if (frame.length !== 16 + dataLength + TAG_LENGTH) {
-    throw new TransferError('bad-chunk', 'chunk length mismatch');
-  }
+function jsonCodec<T>(check: (obj: unknown) => T): BodyCodec<T> {
   return {
-    header: { fileIndex, offset, dataLength },
-    ciphertext: frame.subarray(16, 16 + dataLength),
-    tag: frame.subarray(16 + dataLength),
+    encode: (body) => Buffer.from(JSON.stringify(body), 'utf8'),
+    decode: (buf) => check(parseJson(buf)),
   };
 }
 
-export function deriveNonce(baseNonce: Buffer, counter: bigint): Buffer {
-  if (baseNonce.length !== IV_BASE_LENGTH) {
-    throw new TransferError('bad-nonce', 'base nonce must be 4 bytes');
+const chunkCodec: BodyCodec<ChunkBody> = {
+  encode: ({ fileIndex, offset, data }) => {
+    const out = Buffer.alloc(CHUNK_BODY_PREFIX_LENGTH + data.length);
+    out.writeUInt32BE(fileIndex, 0);
+    out.writeBigUInt64BE(offset, 4);
+    data.copy(out, CHUNK_BODY_PREFIX_LENGTH);
+    return out;
+  },
+  decode: (buf) => {
+    if (buf.length < CHUNK_BODY_PREFIX_LENGTH) {
+      throw new TransferError('bad-chunk', 'chunk frame too short');
+    }
+    return {
+      fileIndex: buf.readUInt32BE(0),
+      offset: buf.readBigUInt64BE(4),
+      data: buf.subarray(CHUNK_BODY_PREFIX_LENGTH),
+    };
+  },
+};
+
+const doneCodec: BodyCodec<null> = {
+  encode: () => Buffer.alloc(0),
+  decode: (buf) => {
+    if (buf.length !== 0) throw new TransferError('bad-frame', 'DONE frame carries a body');
+    return null;
+  },
+};
+
+const BODY_CODECS: { [K in FrameType]: BodyCodec<FrameBodies[K]> } = {
+  [FrameType.HEADER]: jsonCodec(assertHeaderShape),
+  [FrameType.RESUME]: jsonCodec((obj) => obj as ResumeMessage),
+  [FrameType.CHUNK]: chunkCodec,
+  [FrameType.DONE]: doneCodec,
+  [FrameType.RESULT]: jsonCodec((obj) => obj as ResultMessage),
+};
+
+function frameName(type: number): string {
+  return FrameType[type] ?? `type ${type}`;
+}
+
+export function encodeFrame<T extends FrameType>(type: T, body: FrameBodies[T]): Buffer {
+  const codec = BODY_CODECS[type] as BodyCodec<FrameBodies[T]>;
+  return Buffer.concat([Buffer.from([type]), codec.encode(body)]);
+}
+
+export function decodeFrame<T extends FrameType>(plaintext: Buffer, expected: readonly T[]): Frame<T> {
+  const type = plaintext.length > 0 ? plaintext[0] : -1;
+  if (!(expected as readonly number[]).includes(type)) {
+    throw new TransferError(
+      'bad-frame',
+      `expected ${expected.map(frameName).join(' or ')}, got ${type === -1 ? 'an empty frame' : frameName(type)}`,
+    );
   }
-  const out = Buffer.alloc(NONCE_LENGTH);
-  baseNonce.copy(out, 0);
-  out.writeBigUInt64BE(counter, IV_BASE_LENGTH);
-  return out;
+  const codec = BODY_CODECS[type as T] as BodyCodec<FrameBodies[T]>;
+  return { type, body: codec.decode(plaintext.subarray(1)) } as Frame<T>;
 }
 
 export function sanitizePath(p: string): string {

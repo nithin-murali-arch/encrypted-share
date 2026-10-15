@@ -1,13 +1,18 @@
 import type { Socket } from 'net';
 import { FrameReader, MAX_MESSAGE_BYTES, TransferError } from './protocol';
 
+export const DEFAULT_IDLE_TIMEOUT_MS = 60_000;
+
 export class SocketChannel {
   private readonly reader = new FrameReader();
   private waiters: Array<() => void> = [];
   private closed = false;
-  private failure: Error | null = null;
+  private failure: TransferError | null = null;
 
-  constructor(private readonly socket: Socket) {
+  constructor(
+    private readonly socket: Socket,
+    idleTimeoutMs?: number,
+  ) {
     socket.on('data', (chunk: Buffer) => {
       this.reader.push(chunk);
       this.notify();
@@ -17,9 +22,16 @@ export class SocketChannel {
       this.notify();
     });
     socket.on('error', (err: Error) => {
-      if (!this.failure) this.failure = err;
+      this.failure ??= new TransferError('transfer-failed', `connection failed: ${err.message}`);
       this.notify();
     });
+    if (idleTimeoutMs !== undefined) {
+      socket.setTimeout(idleTimeoutMs, () => {
+        this.failure ??= new TransferError('timeout', `no data from the peer for ${idleTimeoutMs / 1000} s`);
+        socket.destroy();
+        this.notify();
+      });
+    }
   }
 
   private notify(): void {
@@ -32,9 +44,7 @@ export class SocketChannel {
     for (;;) {
       const got = poll();
       if (got) return got;
-      if (this.failure) {
-        throw new TransferError('transfer-failed', `connection failed: ${this.failure.message}`);
-      }
+      if (this.failure) throw this.failure;
       if (this.closed) {
         throw new TransferError('truncated', 'connection closed mid-transfer');
       }
@@ -53,9 +63,7 @@ export class SocketChannel {
   }
 
   async write(buf: Buffer): Promise<void> {
-    if (this.failure) {
-      throw new TransferError('transfer-failed', `connection failed: ${this.failure.message}`);
-    }
+    if (this.failure) throw this.failure;
     if (this.closed) {
       throw new TransferError('truncated', 'connection closed mid-transfer');
     }
@@ -78,7 +86,7 @@ export class SocketChannel {
       };
       const onClose = (): void => {
         cleanup();
-        reject(new TransferError('truncated', 'connection closed mid-transfer'));
+        reject(this.failure ?? new TransferError('truncated', 'connection closed mid-transfer'));
       };
       const cleanup = (): void => {
         socket.removeListener('drain', onDrain);
