@@ -102,7 +102,7 @@ async function handleConnection(socket: Socket, ctx: ConnectionContext): Promise
     const store = new PartialStore({ outDir: ctx.outDir, overwrite: ctx.overwrite });
     let received: Record<string, number>;
     try {
-      received = await store.prepare(header.files, header.dirs);
+      received = await ch.withoutIdleTimeout(() => store.prepare(header.files, header.dirs));
     } catch (err) {
       await sc.send(FrameType.RESUME, { received: {}, error: (err as Error).message });
       return;
@@ -117,7 +117,7 @@ async function handleConnection(socket: Socket, ctx: ConnectionContext): Promise
       if (frame.type === FrameType.DONE) break;
       await store.append(frame.body.fileIndex, frame.body.offset, frame.body.data);
     }
-    const result: ResultMessage = await store.verifyAndLand();
+    const result: ResultMessage = await ch.withoutIdleTimeout(() => store.verifyAndLand());
     await sc.send(FrameType.RESULT, result);
     await ch.end();
     log(

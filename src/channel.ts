@@ -11,7 +11,7 @@ export class SocketChannel {
 
   constructor(
     private readonly socket: Socket,
-    idleTimeoutMs?: number,
+    private readonly idleTimeoutMs?: number,
   ) {
     socket.on('data', (chunk: Buffer) => {
       this.reader.push(chunk);
@@ -26,11 +26,26 @@ export class SocketChannel {
       this.notify();
     });
     if (idleTimeoutMs !== undefined) {
-      socket.setTimeout(idleTimeoutMs, () => {
+      socket.on('timeout', () => {
         this.failure ??= new TransferError('timeout', `no data from the peer for ${idleTimeoutMs / 1000} s`);
         socket.destroy();
         this.notify();
       });
+      socket.setTimeout(idleTimeoutMs);
+      socket.setKeepAlive(true, idleTimeoutMs);
+    }
+  }
+
+  // For waits on the peer's disk work (hashing partials or the final verify),
+  // when no bytes flow however healthy the peer is. Keepalive probes still
+  // detect a peer host that vanished.
+  async withoutIdleTimeout<T>(work: () => Promise<T>): Promise<T> {
+    if (this.idleTimeoutMs === undefined) return work();
+    this.socket.setTimeout(0);
+    try {
+      return await work();
+    } finally {
+      this.socket.setTimeout(this.idleTimeoutMs);
     }
   }
 

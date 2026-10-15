@@ -84,7 +84,7 @@ export async function sendFiles(opts: SendOptions): Promise<SendReport> {
     const sc = await clientHandshake(ch, opts.password);
     await sc.send(FrameType.HEADER, { chunkSize, files: manifest.files, dirs: manifest.dirs });
     const { body: resume } = await whenConnectionLost(
-      sc.recv([FrameType.RESUME]),
+      ch.withoutIdleTimeout(() => sc.recv([FrameType.RESUME])),
       'rejected',
       'server closed the connection after the header; check that both sides use the same password',
     );
@@ -124,7 +124,7 @@ export async function sendFiles(opts: SendOptions): Promise<SendReport> {
     }
 
     await sc.send(FrameType.DONE, null);
-    const { body: result } = await sc.recv([FrameType.RESULT]);
+    const { body: result } = await ch.withoutIdleTimeout(() => sc.recv([FrameType.RESULT]));
     if (!result.ok) {
       const reasons = result.failed.map((f) => `${f.path}: ${f.reason}`).join('; ');
       throw new TransferError('verify-failed', `server could not verify transfer: ${reasons}`);
