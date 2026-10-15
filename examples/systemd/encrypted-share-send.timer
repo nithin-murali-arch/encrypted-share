@@ -1,0 +1,11 @@
+[Unit]
+Description=Send field device logs every hour
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=5min
+Unit=encrypted-share-send.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,1 @@
+{"name":"encrypted-share-systemd-example","private":true,"scripts":{"verify":"sh verify-containers.sh"}}
