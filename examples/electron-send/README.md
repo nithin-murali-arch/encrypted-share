@@ -1,0 +1,1 @@
+From the repository root, run `npm ci && npm pack`, then `cd examples/electron-send && npm ci && npm install --no-save ../../nithin93-encrypted-share-3.0.1.tgz && npx electron .`; see [OPERATIONS.md](OPERATIONS.md) for the receiver command and `npx electron . --smoke` verification.
