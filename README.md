@@ -71,7 +71,8 @@ encrypted-share serve --port 3000 --key <your-secret-key> --out ./received-files
 
 Options:
 
-- `-p, --port <number>`: port to listen on (default: `3000`). `serve` listens on all network interfaces.
+- `-p, --port <number>`: port to listen on (default: `3000`).
+- `-H, --host <address>`: local address to listen on, such as `127.0.0.1` or the machine's Tailscale IP (default: all network interfaces). `serve` prints the address and port it bound.
 - `-k, --key <string>`: encryption password (required).
 - `-o, --out <path>`: directory to save received files (default: `./received-files`).
 - `-c, --config <path>`: path to a JSON config file.
@@ -93,13 +94,14 @@ Exit codes: `0` success, `1` usage or config error, `2` transfer failed.
 
 ### Configuration file
 
-A JSON file (default: `~/.encrypted-share.json`) avoids retyping arguments. CLI flags override config values. Relative `outputDir` paths resolve against the current directory.
+A JSON file (default: `~/.encrypted-share.json`) avoids retyping arguments. CLI flags override config values. Relative `outputDir` paths resolve against the current directory. `server` is the address `send` connects to. `host` is the local address `serve` listens on. Leave `host` out to listen on all network interfaces.
 
 ```json
 {
   "key": "my-super-secret-password",
   "server": "localhost:3000",
   "port": 3000,
+  "host": "127.0.0.1",
   "outputDir": "./downloads"
 }
 ```
@@ -113,12 +115,12 @@ If a transfer is interrupted, re-run the same `send` command. The server reports
 ```ts
 import { startServer, sendFiles } from '@nithin93/encrypted-share';
 
-const server = await startServer({ port: 3000, password: 'pw', outDir: './in' });
+const server = await startServer({ host: '127.0.0.1', port: 3000, password: 'pw', outDir: './in' });
 await sendFiles({ host: '127.0.0.1', port: 3000, password: 'pw', path: './data' });
 await server.close();
 ```
 
-`startServer` resolves with a handle that has the bound `port` and a `close()` method. `sendFiles` resolves with a report listing the files and bytes sent, and rejects with a `TransferError` on failure.
+`startServer` listens on all network interfaces unless you pass `host`. It resolves with a handle that has the bound `host` and `port` and a `close()` method. `sendFiles` resolves with a report listing the files and bytes sent, and rejects with a `TransferError` on failure.
 
 Both accept `idleTimeoutMs` (default `60000`). A side that receives nothing from its peer for that long closes the connection, and `sendFiles` rejects with code `timeout`.
 
@@ -259,7 +261,11 @@ jobs:
           ES_PASSWORD: ${{ secrets.ES_PASSWORD }}
 ```
 
-The [tailscale/github-action README](https://github.com/tailscale/github-action#readme) explains how to create the OAuth client for `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_SECRET`. Your tailnet's access rules must let `tag:ci` reach TCP port 3000 on the receiver, and the receiver needs `serve --overwrite` because every run sends the same file names.
+The [tailscale/github-action README](https://github.com/tailscale/github-action#readme) explains how to create the OAuth client for `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_SECRET`. Your tailnet's access rules must let `tag:ci` reach TCP port 3000 on the receiver, and the receiver needs `serve --overwrite` because every run sends the same file names. Start the receiver on its Tailscale address only, so its local network cannot reach the port:
+
+```bash
+npx @nithin93/encrypted-share@3 serve --host "$(tailscale ip -4)" --port 3000 --key <password> --overwrite
+```
 
 ### Receive files in Docker
 
@@ -271,6 +277,8 @@ docker run --rm -p 3000:3000 -v "$PWD/received:/data" \
 ```
 
 Received files land in `./received` on the host. Ctrl+C stops the container, and because `--rm` deletes it, the next start downloads the package again.
+
+Do not pass `--host` inside the container, because the container has its own network interfaces. To limit which host address accepts transfers, put that address in the port mapping instead, for example `-p 100.64.0.5:3000:3000` for a Tailscale IP or `-p 127.0.0.1:3000:3000` for local use only.
 
 ## Security notes
 
@@ -336,7 +344,7 @@ It works anywhere the sender can open a TCP connection to the receiver's port, w
 
 ### Does it work over Tailscale?
 
-Yes. `serve` listens on every network interface, including the Tailscale one, and `send` connects to whatever address `--target` names. Put both machines on the same tailnet and use the receiver's Tailscale IP or MagicDNS name. Tailscale handles NAT traversal, so no port forwarding is needed.
+Yes. By default `serve` listens on every network interface, including the Tailscale one, and `send` connects to whatever address `--target` names. Put both machines on the same tailnet and use the receiver's Tailscale IP or MagicDNS name. Tailscale handles NAT traversal, so no port forwarding is needed.
 
 ```bash
 # on the receiver (MagicDNS name: my-desktop)
@@ -346,7 +354,14 @@ npx @nithin93/encrypted-share@3 serve --port 3000 --key <password>
 npx @nithin93/encrypted-share@3 send --target my-desktop:3000 --key <password> ./data
 ```
 
-If your tailnet uses access control rules, they must allow the sender to reach TCP port 3000 on the receiver. Tailscale encrypts the link with WireGuard. `encrypted-share` adds its own password-based encryption, a SHA-256 check on every file, and resume on top of that. Because `serve` listens on every interface, it also accepts connections from the receiver's local network, and the password is what keeps other devices out.
+To accept transfers only over the tailnet, pass the receiver's Tailscale IP to `--host`. `serve` then listens on that address alone, so devices on the receiver's local network or the public internet cannot reach the port at all, password or not.
+
+```bash
+# on the receiver: listen only on its Tailscale IPv4 address
+npx @nithin93/encrypted-share@3 serve --host "$(tailscale ip -4)" --port 3000 --key <password>
+```
+
+If your tailnet uses access control rules, they must allow the sender to reach TCP port 3000 on the receiver. Tailscale encrypts the link with WireGuard. `encrypted-share` adds its own password-based encryption, a SHA-256 check on every file, and resume on top of that. Without `--host`, `serve` also accepts connections from the receiver's local network, and the password is what keeps other devices out.
 
 ### How is the key derived from the password?
 

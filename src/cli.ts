@@ -44,6 +44,7 @@ export function createProgram(): Command {
     .command('serve')
     .description('Start the file receiving server')
     .option('-p, --port <number>', 'Port to listen on')
+    .option('-H, --host <address>', 'Address to listen on (default: all interfaces)')
     .option('-k, --key <string>', 'Encryption key (password)')
     .option('-o, --out <path>', 'Output directory (default: ./received-files)')
     .option('-c, --config <path>', 'Path to config file')
@@ -59,13 +60,15 @@ export function createProgram(): Command {
       const starting = ora('Starting server...').start();
       try {
         const handle = await startServer({
+          host: options.host ?? config.host,
           port,
           password: key,
           outDir,
           overwrite: options.overwrite === true,
           onTransfer: (msg) => console.log(chalk.dim(`[${new Date().toISOString()}] `) + msg),
         });
-        starting.succeed(`Server listening on port ${handle.port}`);
+        const host = handle.host.includes(':') ? `[${handle.host}]` : handle.host;
+        starting.succeed(`Server listening on ${host}:${handle.port}`);
         console.log(`Saving files to: ${chalk.cyan(outDir)}`);
         const shutdown = async (): Promise<void> => {
           console.log(chalk.dim('\nShutting down...'));
