@@ -1,4 +1,4 @@
-Install a local package tarball with `npm install --no-save --package-lock=false /absolute/path/to/nithin93-encrypted-share-3.0.1.tgz`, then run `ES_PASSWORD='your-shared-password' ES_OUT_DIR='./received' ES_PORT=4000 WEBHOOK_URL='http://127.0.0.1:8080/transfers' npm start` with Node.js 20 or later.
+Install a local package tarball with `npm install --no-save --package-lock=false /absolute/path/to/nithin93-encrypted-share-3.1.0.tgz`, then run `ES_PASSWORD='your-shared-password' ES_OUT_DIR='./received' ES_PORT=4000 WEBHOOK_URL='http://127.0.0.1:8080/transfers' npm start` with Node.js 20 or later.
 
 Create the tarball from the repository root with `npm pack --pack-destination /tmp`. Set `WEBHOOK_TIMEOUT_MS` to an integer from 1 to 60000 to change the default 5000 ms timeout. Use the same password in the sender. The receiver listens on all interfaces, as `startServer` does.
 
