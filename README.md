@@ -428,3 +428,7 @@ Releases are cut by pushing a tag (`git tag v3.x.y && git push --tags`). CI buil
 ## License
 
 MIT
+
+### Collect field-device logs on a schedule
+
+The [systemd example](examples/systemd/) supplies a sender service, timer, and receiver service that binds to a configured tailnet address. It requires the `serve --host` change in PR #4. The container check uses two containers on an internal network and a self-contained packed CLI. It does not enable units or prove a live tailnet deployment.

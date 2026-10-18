@@ -1,0 +1,20 @@
+[Unit]
+Description=Receive field device logs on a tailnet address
+Wants=network-online.target
+After=network-online.target tailscaled.service
+
+[Service]
+Type=simple
+User=encrypted-share
+EnvironmentFile=/etc/encrypted-share/receiver.env
+StateDirectory=encrypted-share
+ExecStart=/usr/local/bin/encrypted-share serve --host ${ES_HOST} --port 3000 --config /etc/encrypted-share/receive.json --out /var/lib/encrypted-share/received --overwrite
+Restart=on-failure
+RestartSec=10s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
