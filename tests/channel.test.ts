@@ -98,14 +98,18 @@ describe('SocketChannel', () => {
       fx.peer.destroy();
       // Kernel-level race: queued bytes may flush (resolve) or the close may
       // land first (TransferError reject). Either is correct; hanging is not.
+      let timer: NodeJS.Timeout | undefined;
       const outcome = await Promise.race([
         pending.then(
           () => 'resolved' as const,
           (err: unknown) =>
             (err instanceof TransferError ? 'rejected-transfer' : 'rejected-raw') as const,
         ),
-        sleep(5000).then(() => 'TIMEOUT' as const),
+        new Promise<'TIMEOUT'>((resolve) => {
+          timer = setTimeout(() => resolve('TIMEOUT'), 5000);
+        }),
       ]);
+      clearTimeout(timer);
       expect(['resolved', 'rejected-transfer']).toContain(outcome);
     } finally {
       await destroy(fx);
