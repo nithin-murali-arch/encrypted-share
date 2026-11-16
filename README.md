@@ -6,6 +6,7 @@
 [![license](https://img.shields.io/npm/l/@nithin93%2Fencrypted-share)](https://github.com/nithin-murali-arch/encrypted-share/blob/main/LICENSE)
 [![types](https://img.shields.io/npm/types/@nithin93%2Fencrypted-share)](https://www.npmjs.com/package/@nithin93/encrypted-share)
 [![node](https://img.shields.io/node/v/@nithin93%2Fencrypted-share)](https://www.npmjs.com/package/@nithin93/encrypted-share)
+[![Sponsor](https://img.shields.io/badge/sponsor-GitHub%20Sponsors-ea4aaa?logo=githubsponsors)](https://github.com/sponsors/nithin-murali-arch)
 
 `encrypted-share` is a command-line tool and Node.js library for sending files and folders between two machines over TCP. Everything after a short handshake, file names included, is encrypted and authenticated with AES-256-GCM and a shared password. It checks a SHA-256 hash for every file before the file lands, resumes interrupted transfers, has no native dependencies, and needs no third-party server or account.
 
@@ -424,6 +425,10 @@ npm run lint     # eslint
 ```
 
 Releases are cut by pushing a tag (`git tag v3.x.y && git push --tags`). CI builds, tests, and publishes to npm with provenance. npm trusted publishing (OIDC) must be configured once for the package.
+
+## Sponsor
+
+If this package saves you time, you can support its maintenance through [GitHub Sponsors](https://github.com/sponsors/nithin-murali-arch).
 
 ## License
 
